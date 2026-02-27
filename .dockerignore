@@ -1,0 +1,63 @@
+# Git
+.git
+.gitignore
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# Tests
+tests/
+.pytest_cache/
+
+# Documentation
+*.md
+LICENSE
+
+# Docker
+docker/
+docker-compose*.yml
+
+# Scripts (not needed in container)
+scripts/
+
+# Model weights (mounted as volumes)
+models/
+moe_router/gating/models/
+moe_router/models/
+
+# LoRA adapter weights (mounted as volumes)
+moe_router/experts/llms/adapters/finance/*/llama*
+moe_router/experts/llms/adapters/finance/*/Llama*
+moe_router/experts/llms/adapters/finance/*/mistral*
+moe_router/experts/llms/adapters/finance/*/Mistral*
+moe_router/experts/llms/adapters/finance/*/gemma*
+moe_router/experts/llms/adapters/finance/*/xglm*
+moe_router/experts/llms/adapters/finance/*/aya*
+moe_router/experts/llms/adapters/finance/*/bloomz*
+moe_router/experts/llms/adapters/finance/*/deepseek*
+moe_router/experts/llms/adapters/finance/*/qwen*
+
+# Environment files
+.env
+.env.*
+
+# Cache
+__pycache__/
+*.py[cod]
+.cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large files
+*.pt
+*.pth
+*.bin
+*.safetensors

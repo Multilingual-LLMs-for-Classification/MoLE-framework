@@ -1,0 +1,63 @@
+{
+  "_comment": "Maps each base_model_key from experts_registry.json to its dedicated expert worker. Update 'url' values to real IPs/hostnames when deploying on separate machines.",
+  "workers": {
+    "worker-0": {
+      "url": "http://localhost:8001",
+      "base_model_key": "llama-2-7b-hf",
+      "gpu_device": "0",
+      "machine": "machine-0",
+      "note": "Same host as coordinator; shares GPU 0"
+    },
+    "worker-1": {
+      "url": "http://expert-worker-1:8002",
+      "base_model_key": "qwen2.5-7b-instruct",
+      "gpu_device": "0",
+      "machine": "machine-1",
+      "note": "Handles Spanish / Japanese sentiment & ESCI (Qwen2.5)"
+    },
+    "worker-2": {
+      "url": "http://expert-worker-2:8003",
+      "base_model_key": "bloomz-7b1",
+      "gpu_device": "0",
+      "machine": "machine-2",
+      "note": "Handles Chinese sentiment (BLOOMZ)"
+    },
+    "worker-3": {
+      "url": "http://expert-worker-3:8004",
+      "base_model_key": "mistral-7B-Instruct-v0.3",
+      "gpu_device": "0",
+      "machine": "machine-3",
+      "note": "Handles all PII languages + Spanish ESCI (Mistral-7B)"
+    },
+    "worker-4": {
+      "url": "http://expert-worker-4:8005",
+      "base_model_key": "unsloth/mistral-7b-instruct-v0.3-bnb-4bit",
+      "gpu_device": "0",
+      "machine": "machine-4",
+      "note": "Handles news classification: EN, DA, ES, PL (Mistral unsloth 4-bit)"
+    },
+    "worker-5": {
+      "url": "http://expert-worker-5:8006",
+      "base_model_key": "facebook/xglm-7.5B",
+      "gpu_device": "0",
+      "machine": "machine-5",
+      "note": "Handles Turkish news classification (XGLM)"
+    },
+    "worker-6": {
+      "url": "http://expert-worker-6:8007",
+      "base_model_key": "llama-3.1-8b-instruct",
+      "gpu_device": "0",
+      "machine": "machine-6",
+      "note": "Handles English / Japanese ESCI (Llama-3.1-8B)"
+    }
+  },
+  "model_to_worker": {
+    "llama-2-7b-hf":                             "worker-0",
+    "qwen2.5-7b-instruct":                       "worker-1",
+    "bloomz-7b1":                                "worker-2",
+    "mistral-7B-Instruct-v0.3":                  "worker-3",
+    "unsloth/mistral-7b-instruct-v0.3-bnb-4bit": "worker-4",
+    "facebook/xglm-7.5B":                        "worker-5",
+    "llama-3.1-8b-instruct":                     "worker-6"
+  }
+}

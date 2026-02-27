@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  classification-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: moe-classification-service
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount trained gating models
+      - ./volumes/gating_models:/app/moe_router/gating/models:ro
+      # Mount language model
+      - ./volumes/language_models:/app/moe_router/models:ro
+      # Mount LoRA adapter weights
+      - ./volumes/adapter_weights:/app/moe_router/experts/llms/adapters:ro
+      # HuggingFace cache for transformer models
+      - huggingface_cache:/root/.cache/huggingface
+      # FastText models cache
+      - fasttext_cache:/root/.cache/fasttext
+    environment:
+      # API Configuration
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - DEBUG=false
+
+      # JWT Configuration (change in production!)
+      - JWT_SECRET_KEY=your-super-secret-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+      # GPU Configuration
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+
+      # HuggingFace cache
+      - HF_HOME=/root/.cache/huggingface
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+
+      # Request settings
+      - REQUEST_TIMEOUT_SECONDS=120
+      - MAX_CONCURRENT_GPU_REQUESTS=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
+
+volumes:
+  huggingface_cache:
+    driver: local
+  fasttext_cache:
+    driver: local

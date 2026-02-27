@@ -1,0 +1,159 @@
+version: '3.8'
+
+# ============================================================================
+# MoLE Distributed Deployment
+# ============================================================================
+#
+# Services in this file (all on Machine 0 / GPU 0):
+#   coordinator      — gating pipeline + gateway  (port 8000, public-facing)
+#   expert-worker-0  — LLM: llama-2-7b-hf         (port 8001, internal)
+#
+# Workers on remote machines (GPU 1 … N) are deployed separately using
+# docker/docker-compose-worker.yml.  Update config/expert_machine_mapping.json
+# with the real IPs/hostnames of those machines before starting the coordinator.
+#
+# Quick start (single machine, GPU 0):
+#   docker-compose -f docker/docker-compose-distributed.yml up --build
+#
+# ============================================================================
+
+networks:
+  mole-network:
+    driver: bridge
+
+volumes:
+  gating_models:
+    driver: local
+  language_models:
+    driver: local
+  adapter_weights:
+    driver: local
+  huggingface_cache:
+    driver: local
+  fasttext_cache:
+    driver: local
+
+services:
+
+  # --------------------------------------------------------------------------
+  # COORDINATOR
+  # Lightweight gating pipeline + HTTP gateway.  No LLM loaded in this process.
+  # --------------------------------------------------------------------------
+  coordinator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: mole-coordinator
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    ports:
+      - "8000:8000"
+    environment:
+      # Service mode
+      - SERVICE_MODE=coordinator
+      - EXPERT_MAPPING_PATH=/app/config/expert_machine_mapping.json
+
+      # API
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - DEBUG=false
+
+      # JWT (change in production!)
+      - JWT_SECRET_KEY=your-super-secret-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+      # GPU for gating models (FastText + XLM-RoBERTa + Q-learning NN)
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+
+      # HuggingFace cache
+      - HF_HOME=/root/.cache/huggingface
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+
+      # Request timeout (covers full round-trip including worker inference)
+      - REQUEST_TIMEOUT_SECONDS=300
+    volumes:
+      - gating_models:/app/moe_router/gating/models:ro
+      - language_models:/app/moe_router/models:ro
+      - fasttext_cache:/root/.cache/fasttext
+      - ../config:/app/config:ro
+    networks:
+      - mole-network
+    depends_on:
+      expert-worker-0:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
+  # --------------------------------------------------------------------------
+  # EXPERT WORKER 0
+  # Pre-loads llama-2-7b-hf on GPU 0 (same machine as coordinator).
+  # Handles: English/German/French sentiment analysis.
+  # --------------------------------------------------------------------------
+  expert-worker-0:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: mole-expert-worker-0
+    command: uvicorn expert_worker.main:app --host 0.0.0.0 --port 8001 --workers 1
+    ports:
+      - "8001:8001"
+    environment:
+      - WORKER_MODEL_KEY=llama-2-7b-hf
+      - WORKER_ID=worker-0
+      - WORKER_PORT=8001
+      - EXPERT_REGISTRY_PATH=/app/moe_router/experts/config/experts_registry.json
+
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HOME=/root/.cache/huggingface
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - MAX_CONCURRENT_GPU_REQUESTS=1
+    volumes:
+      - adapter_weights:/app/moe_router/experts/llms/adapters:ro
+      - huggingface_cache:/root/.cache/huggingface
+      - ../config:/app/config:ro
+    networks:
+      - mole-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      # Readiness probe: returns 200 only after model is fully loaded in GPU
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/health/ready"]
+      interval: 30s
+      timeout: 10s
+      start_period: 300s      # Allow up to 5 min for LLM to load at first startup
+      retries: 10
+
+  # --------------------------------------------------------------------------
+  # EXPERT WORKERS 1–6  (remote machines)
+  # --------------------------------------------------------------------------
+  # These workers run on separate GPU machines.
+  # Deploy each one with docker/docker-compose-worker.yml on its host.
+  # Update config/expert_machine_mapping.json with their real IPs first.
+  #
+  # Worker 1 — qwen2.5-7b-instruct   (Machine 1, GPU 1): Spanish/Japanese sentiment + ESCI
+  # Worker 2 — bloomz-7b1             (Machine 2, GPU 2): Chinese sentiment
+  # Worker 3 — mistral-7B-Instruct    (Machine 3, GPU 3): All-language PII + Spanish ESCI
+  # Worker 4 — mistral unsloth 4-bit  (Machine 4, GPU 4): News classification EN/DA/ES/PL
+  # Worker 5 — facebook/xglm-7.5B    (Machine 5, GPU 5): Turkish news classification
+  # Worker 6 — llama-3.1-8b-instruct  (Machine 6, GPU 6): English/Japanese ESCI
+  # --------------------------------------------------------------------------

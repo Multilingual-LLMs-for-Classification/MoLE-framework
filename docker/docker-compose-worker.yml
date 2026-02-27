@@ -1,0 +1,72 @@
+version: '3.8'
+
+# ============================================================================
+# MoLE Expert Worker — Remote Machine Template
+# ============================================================================
+#
+# Deploy this file on each remote GPU machine (Machine 1, 2, … N).
+#
+# Required environment variables (set in .env or export before running):
+#   WORKER_MODEL_KEY   — base model key from experts_registry.json
+#                        e.g. "qwen2.5-7b-instruct"
+#   WORKER_ID          — human-readable identifier, e.g. "worker-1"
+#   WORKER_PORT        — port this worker listens on, e.g. "8002"
+#   ADAPTER_PATH       — host path to adapter weights directory
+#   HF_CACHE_PATH      — host path to HuggingFace model cache
+#   CONFIG_PATH        — host path to the config/ directory
+#
+# Usage:
+#   # On Machine 1:
+#   export WORKER_MODEL_KEY=qwen2.5-7b-instruct
+#   export WORKER_ID=worker-1
+#   export WORKER_PORT=8002
+#   export ADAPTER_PATH=/data/mole/adapters
+#   export HF_CACHE_PATH=/data/mole/hf_cache
+#   export CONFIG_PATH=/data/mole/config
+#   docker-compose -f docker/docker-compose-worker.yml up -d
+#
+# After starting, update config/expert_machine_mapping.json on the coordinator
+# with this machine's real IP: "url": "http://<machine-1-ip>:8002"
+# ============================================================================
+
+services:
+  expert-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: mole-expert-worker-${WORKER_ID:-worker-x}
+    command: uvicorn expert_worker.main:app --host 0.0.0.0 --port ${WORKER_PORT:-8002} --workers 1
+    ports:
+      - "${WORKER_PORT:-8002}:${WORKER_PORT:-8002}"
+    environment:
+      - WORKER_MODEL_KEY=${WORKER_MODEL_KEY}
+      - WORKER_ID=${WORKER_ID:-worker-x}
+      - WORKER_PORT=${WORKER_PORT:-8002}
+      - EXPERT_REGISTRY_PATH=/app/moe_router/experts/config/experts_registry.json
+
+      # GPU: always GPU 0 from this machine's perspective
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HOME=/root/.cache/huggingface
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+
+      # Serialize GPU requests within this worker (1 LLM, 1 request at a time)
+      - MAX_CONCURRENT_GPU_REQUESTS=1
+    volumes:
+      - ${ADAPTER_PATH}:/app/moe_router/experts/llms/adapters:ro
+      - ${HF_CACHE_PATH}:/root/.cache/huggingface
+      - ${CONFIG_PATH}:/app/config:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${WORKER_PORT:-8002}/api/v1/health/ready"]
+      interval: 30s
+      timeout: 10s
+      start_period: 300s      # Allow up to 5 min for LLM to load
+      retries: 10
