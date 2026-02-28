@@ -17,19 +17,7 @@ version: '3.8'
 #
 # ============================================================================
 
-networks:
-  mole-network:
-    driver: bridge
-
 volumes:
-  gating_models:
-    driver: local
-  language_models:
-    driver: local
-  adapter_weights:
-    driver: local
-  huggingface_cache:
-    driver: local
   fasttext_cache:
     driver: local
 
@@ -45,8 +33,6 @@ services:
       dockerfile: docker/Dockerfile
     container_name: mole-coordinator
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
-    ports:
-      - "8000:8000"
     environment:
       # Service mode
       - SERVICE_MODE=coordinator
@@ -62,9 +48,9 @@ services:
       - JWT_ALGORITHM=HS256
       - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
 
-      # GPU for gating models (FastText + XLM-RoBERTa + Q-learning NN)
-      - CUDA_VISIBLE_DEVICES=0
-      - NVIDIA_VISIBLE_DEVICES=all
+      # Coordinator runs on CPU — GPU 0 is fully reserved for expert-worker-0 (llama-2-7b-hf)
+      - CUDA_VISIBLE_DEVICES=""
+      - NVIDIA_VISIBLE_DEVICES=void
 
       # HuggingFace cache
       - HF_HOME=/root/.cache/huggingface
@@ -73,22 +59,14 @@ services:
       # Request timeout (covers full round-trip including worker inference)
       - REQUEST_TIMEOUT_SECONDS=300
     volumes:
-      - gating_models:/app/moe_router/gating/models:ro
-      - language_models:/app/moe_router/models:ro
+      - ./volumes/gating_models:/app/moe_router/gating/models
+      - ./volumes/language_models:/app/moe_router/models:ro
       - fasttext_cache:/root/.cache/fasttext
       - ../config:/app/config:ro
-    networks:
-      - mole-network
+    network_mode: host
     depends_on:
       expert-worker-0:
         condition: service_healthy
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
@@ -108,8 +86,6 @@ services:
       dockerfile: docker/Dockerfile
     container_name: mole-expert-worker-0
     command: uvicorn expert_worker.main:app --host 0.0.0.0 --port 8001 --workers 1
-    ports:
-      - "8001:8001"
     environment:
       - WORKER_MODEL_KEY=llama-2-7b-hf
       - WORKER_ID=worker-0
@@ -122,18 +98,11 @@ services:
       - TRANSFORMERS_CACHE=/root/.cache/huggingface
       - MAX_CONCURRENT_GPU_REQUESTS=1
     volumes:
-      - adapter_weights:/app/moe_router/experts/llms/adapters:ro
-      - huggingface_cache:/root/.cache/huggingface
+      - ./volumes/adapter_weights:/app/moe_router/experts/llms/adapters:ro
+      - /home/cse/.cache/huggingface:/root/.cache/huggingface
       - ../config:/app/config:ro
-    networks:
-      - mole-network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
+    network_mode: host
+    runtime: nvidia
     restart: unless-stopped
     healthcheck:
       # Readiness probe: returns 200 only after model is fully loaded in GPU

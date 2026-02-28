@@ -77,4 +77,8 @@ coverage.xml
 *.model
 train_combined.json
 
+# Model weights and volumes (large files)
+docker/volumes/
+moe_router/models/lid.176.bin
+
 

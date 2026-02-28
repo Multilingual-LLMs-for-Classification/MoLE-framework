@@ -1,5 +1,5 @@
 # Base image with CUDA support
-FROM nvidia/cuda:12.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -30,6 +30,7 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
 # Copy application code and moe_router package
 COPY app/ ./app/
 COPY moe_router/ ./moe_router/
+COPY expert_worker/ ./expert_worker/
 
 # Set Python path
 ENV PYTHONPATH="/app"

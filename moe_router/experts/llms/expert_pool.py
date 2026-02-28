@@ -191,6 +191,11 @@ class LLMAdapterPool:
             self.base_models[base_key]["model"] = peft_model
             model = peft_model
 
+        # load_adapter() leaves LoRA weights on CPU by default — move them to GPU.
+        for name, param in model.named_parameters():
+            if "lora_" in name and param.device.type == "cpu":
+                param.data = param.data.to(self.device)
+
         slot["adapters_loaded"].add(adapter_name)
         print(f"Adapter '{adapter_name}' loaded successfully on base model '{base_key}'")
 

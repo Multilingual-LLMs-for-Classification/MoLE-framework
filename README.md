@@ -54,7 +54,7 @@ load/unload latency of the original monolithic architecture.
 
 | Worker | Port | LLM | Handles | Machine | Status |
 |--------|------|-----|---------|---------|--------|
-| worker-0 | 8001 | `llama-2-7b-hf` | Sentiment: EN, DE, FR | `10.8.100.21` | **active** |
+| worker-0 | 8001 | `llama-2-7b-hf` | Sentiment: EN, DE, FR | coordinator machine (same docker-compose) | **active** |
 | worker-1 | 8002 | `qwen2.5-7b-instruct` | Sentiment: ES, JA · ESCI: ES | — | pending |
 | worker-2 | 8003 | `bloomz-7b1` | Sentiment: ZH | — | pending |
 | worker-3 | 8004 | `mistral-7B-Instruct-v0.3` | PII: all languages · ESCI: ES | — | pending |
@@ -165,7 +165,7 @@ docker/volumes/
 │   ├── domain_xlmr/        # XLM-RoBERTa domain classifier weights
 │   └── task_routers_qlearning/  # per-domain Q-learning router weights
 ├── language_models/        # FastText language identification model
-│   └── lid.176.ftz
+│   └── lid.176.bin
 └── adapter_weights/        # LoRA adapters (mirror this on every worker machine)
     └── finance/
         ├── sentiment_analysis/
@@ -255,6 +255,11 @@ docker-compose -f docker/docker-compose-worker.yml up --build -d
 docker-compose -f docker/docker-compose-worker.yml logs -f
 ```
 
+```bash
+# To stop
+`docker-compose -f docker-compose-distributed.yml down` to stop
+```
+
 **Verify the worker is ready:**
 
 ```bash
@@ -266,7 +271,7 @@ curl http://localhost:8001/api/v1/health/ready
 
 | IP | WORKER_MODEL_KEY | WORKER_ID | WORKER_PORT | Status |
 |----|-----------------|-----------|-------------|--------|
-| `10.8.100.21` | `llama-2-7b-hf` | `worker-0` | `8001` | **active** |
+| coordinator machine | `llama-2-7b-hf` | `worker-0` | `8001` | **active** |
 | `10.8.100.28` | `unsloth/mistral-7b-instruct-v0.3-bnb-4bit` | `worker-4` | `8005` | **active** |
 
 **Future workers (add as more GPUs become available):**
