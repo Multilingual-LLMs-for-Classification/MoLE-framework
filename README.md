@@ -52,18 +52,17 @@ load/unload latency of the original monolithic architecture.
 
 ## Expert ↔ Worker Mapping
 
-| Worker | Port | LLM | Handles |
-|--------|------|-----|---------|
-| worker-0 | 8001 | `llama-2-7b-hf` | Sentiment: EN, DE, FR |
-| worker-1 | 8002 | `qwen2.5-7b-instruct` | Sentiment: ES, JA · ESCI: ES |
-| worker-2 | 8003 | `bloomz-7b1` | Sentiment: ZH |
-| worker-3 | 8004 | `mistral-7B-Instruct-v0.3` | PII: all languages · ESCI: ES |
-| worker-4 | 8005 | `unsloth/mistral-7b-instruct-v0.3-bnb-4bit` | News: EN, DA, ES, PL |
-| worker-5 | 8006 | `facebook/xglm-7.5B` | News: TR |
-| worker-6 | 8007 | `llama-3.1-8b-instruct` | ESCI: EN, JA |
+| Worker | Port | LLM | Handles | Machine | Status |
+|--------|------|-----|---------|---------|--------|
+| worker-0 | 8001 | `llama-2-7b-hf` | Sentiment: EN, DE, FR | `10.8.100.21` | **active** |
+| worker-1 | 8002 | `qwen2.5-7b-instruct` | Sentiment: ES, JA · ESCI: ES | — | pending |
+| worker-2 | 8003 | `bloomz-7b1` | Sentiment: ZH | — | pending |
+| worker-3 | 8004 | `mistral-7B-Instruct-v0.3` | PII: all languages · ESCI: ES | — | pending |
+| worker-4 | 8005 | `unsloth/mistral-7b-instruct-v0.3-bnb-4bit` | News: EN, DA, ES, PL | `10.8.100.28` | **active** |
+| worker-5 | 8006 | `facebook/xglm-7.5B` | News: TR | — | pending |
+| worker-6 | 8007 | `llama-3.1-8b-instruct` | ESCI: EN, JA | — | pending |
 
-Worker 0 runs on **the same machine as the coordinator** (GPU 0 shared).
-Workers 1–6 each run on a **dedicated GPU machine**.
+Each worker runs on a **dedicated GPU machine**. The coordinator runs separately and dispatches to workers via HTTP.
 
 ---
 
@@ -71,7 +70,7 @@ Workers 1–6 each run on a **dedicated GPU machine**.
 
 - Python 3.11+
 - NVIDIA GPU with CUDA 12.1+ on each machine
-- Docker + NVIDIA Container Toolkit (`nvidia-docker2`) on each machine
+- Docker + NVIDIA Container Toolkit (`nvidia-container-toolkit`) on each machine
 - Trained gating model weights (domain classifier + Q-learning task routers)
 - LoRA adapter weights for each expert
 - HuggingFace access token (for Llama/Mistral gated models)
@@ -135,11 +134,18 @@ git clone <your-repo-url> MoLE-framework
 cd MoLE-framework
 
 # 2. Install NVIDIA Container Toolkit (if not already installed)
-distribution=$(. /etc/os-release; echo $ID$VERSION_ID)
-curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
-curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list \
-  | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
-sudo apt-get update && sudo apt-get install -y nvidia-docker2
+# Add the NVIDIA Container Toolkit repo (modern method)
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+
+# Configure Docker to use the NVIDIA runtime
+sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 
 # 3. Verify GPU access in Docker
@@ -178,10 +184,10 @@ docker/volumes/
 
 ---
 
-### Step 3 — Configure Machine 0 (Coordinator + Worker 0)
+### Step 3 — Configure the Coordinator machine
 
 ```bash
-# On Machine 0
+# On the coordinator machine
 cd MoLE-framework
 cp .env.example .env
 ```
@@ -196,25 +202,20 @@ REQUEST_TIMEOUT_SECONDS=300
 CUDA_VISIBLE_DEVICES=0
 ```
 
-Open `config/expert_machine_mapping.json` and verify `worker-0` points to `localhost`:
+Open `config/expert_machine_mapping.json` and set the real IPs for active workers.
+Leave inactive workers pointing to placeholder hostnames for now:
 
 ```json
-"worker-0": {
-  "url": "http://localhost:8001",
-  "base_model_key": "llama-2-7b-hf",
-  ...
-}
+"worker-0": { "url": "http://10.8.100.21:8001", ... },
+"worker-4": { "url": "http://10.8.100.28:8005", ... }
 ```
-
-At this stage, leave workers 1–6 pointing to placeholder hostnames.
-You will update them after starting the remote workers (Step 5).
 
 ---
 
-### Step 4 — Start Machine 0 (Coordinator + Worker 0)
+### Step 4 — Start the Coordinator
 
 ```bash
-# On Machine 0
+# On the coordinator machine
 cd MoLE-framework/docker
 
 docker-compose -f docker-compose-distributed.yml up --build -d
@@ -224,80 +225,77 @@ docker-compose -f docker-compose-distributed.yml logs -f
 ```
 
 **What happens:**
-- `expert-worker-0` starts first and loads `llama-2-7b-hf` into GPU 0 (~2–5 min first run)
-- `coordinator` starts after `expert-worker-0` passes its `/api/v1/health/ready` check
 - Coordinator loads gating models (FastText + XLM-RoBERTa + Q-learning, ~1–2 min)
+- Workers are remote and started separately (Step 5)
 
-**Verify Machine 0 is ready:**
+**Verify the coordinator is ready:**
 
 ```bash
-# Coordinator health
 curl http://localhost:8000/api/v1/health/ready
-
-# Worker 0 health (should show model_loaded: true)
-curl http://localhost:8001/api/v1/health/ready
 ```
 
 ---
 
-### Step 5 — Start remote expert workers (Machine 1 … N)
+### Step 5 — Start remote expert workers
 
-Repeat for each remote machine. Example for **Machine 1** (qwen2.5-7b-instruct):
+Repeat for each active worker machine. Example for **worker-0** on `10.8.100.21`:
 
 ```bash
-# On Machine 1
+# On 10.8.100.21
 cd MoLE-framework
 
-# Set environment variables for this worker
-export WORKER_MODEL_KEY=qwen2.5-7b-instruct
-export WORKER_ID=worker-1
-export WORKER_PORT=8002
+export WORKER_MODEL_KEY=llama-2-7b-hf
+export WORKER_ID=worker-0
+export WORKER_PORT=8001
 export ADAPTER_PATH=$(pwd)/docker/volumes/adapter_weights
 export HF_CACHE_PATH=/root/.cache/huggingface
 export CONFIG_PATH=$(pwd)/config
 
-# Start the worker
 docker-compose -f docker/docker-compose-worker.yml up --build -d
-
-# Watch logs
 docker-compose -f docker/docker-compose-worker.yml logs -f
 ```
 
 **Verify the worker is ready:**
 
 ```bash
-curl http://localhost:8002/api/v1/health/ready
-# Expected: {"status":"ready","model_loaded":true,"worker_id":"worker-1",...}
+curl http://localhost:8001/api/v1/health/ready
+# Expected: {"status":"ready","model_loaded":true,"worker_id":"worker-0",...}
 ```
 
-**Reference table for all workers:**
+**Current active workers:**
 
-| Machine | WORKER_MODEL_KEY | WORKER_ID | WORKER_PORT |
-|---------|-----------------|-----------|-------------|
-| Machine 1 | `qwen2.5-7b-instruct` | `worker-1` | `8002` |
-| Machine 2 | `bloomz-7b1` | `worker-2` | `8003` |
-| Machine 3 | `mistral-7B-Instruct-v0.3` | `worker-3` | `8004` |
-| Machine 4 | `unsloth/mistral-7b-instruct-v0.3-bnb-4bit` | `worker-4` | `8005` |
-| Machine 5 | `facebook/xglm-7.5B` | `worker-5` | `8006` |
-| Machine 6 | `llama-3.1-8b-instruct` | `worker-6` | `8007` |
+| IP | WORKER_MODEL_KEY | WORKER_ID | WORKER_PORT | Status |
+|----|-----------------|-----------|-------------|--------|
+| `10.8.100.21` | `llama-2-7b-hf` | `worker-0` | `8001` | **active** |
+| `10.8.100.28` | `unsloth/mistral-7b-instruct-v0.3-bnb-4bit` | `worker-4` | `8005` | **active** |
+
+**Future workers (add as more GPUs become available):**
+
+| WORKER_MODEL_KEY | WORKER_ID | WORKER_PORT |
+|-----------------|-----------|-------------|
+| `qwen2.5-7b-instruct` | `worker-1` | `8002` |
+| `bloomz-7b1` | `worker-2` | `8003` |
+| `mistral-7B-Instruct-v0.3` | `worker-3` | `8004` |
+| `facebook/xglm-7.5B` | `worker-5` | `8006` |
+| `llama-3.1-8b-instruct` | `worker-6` | `8007` |
 
 ---
 
 ### Step 6 — Update the expert machine mapping with real IPs
 
-Once all workers are running, update `config/expert_machine_mapping.json` on **Machine 0**
-with the real IP addresses of the remote machines:
+Update `config/expert_machine_mapping.json` on the coordinator machine with the real IPs
+of active workers. Leave inactive workers pointing to placeholder hostnames:
 
 ```json
 {
   "workers": {
-    "worker-0": { "url": "http://localhost:8001",        ... },
-    "worker-1": { "url": "http://192.168.1.101:8002",   ... },
-    "worker-2": { "url": "http://192.168.1.102:8003",   ... },
-    "worker-3": { "url": "http://192.168.1.103:8004",   ... },
-    "worker-4": { "url": "http://192.168.1.104:8005",   ... },
-    "worker-5": { "url": "http://192.168.1.105:8006",   ... },
-    "worker-6": { "url": "http://192.168.1.106:8007",   ... }
+    "worker-0": { "url": "http://10.8.100.21:8001",      ... },
+    "worker-1": { "url": "http://expert-worker-1:8002",  ... },
+    "worker-2": { "url": "http://expert-worker-2:8003",  ... },
+    "worker-3": { "url": "http://expert-worker-3:8004",  ... },
+    "worker-4": { "url": "http://10.8.100.28:8005",      ... },
+    "worker-5": { "url": "http://expert-worker-5:8006",  ... },
+    "worker-6": { "url": "http://expert-worker-6:8007",  ... }
   },
   ...
 }

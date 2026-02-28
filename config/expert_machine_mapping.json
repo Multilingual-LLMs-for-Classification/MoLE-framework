@@ -2,11 +2,11 @@
   "_comment": "Maps each base_model_key from experts_registry.json to its dedicated expert worker. Update 'url' values to real IPs/hostnames when deploying on separate machines.",
   "workers": {
     "worker-0": {
-      "url": "http://localhost:8001",
+      "url": "http://10.8.100.21:8001",
       "base_model_key": "llama-2-7b-hf",
       "gpu_device": "0",
       "machine": "machine-0",
-      "note": "Same host as coordinator; shares GPU 0"
+      "note": "10.8.100.21 GPU 0"
     },
     "worker-1": {
       "url": "http://expert-worker-1:8002",
@@ -30,11 +30,11 @@
       "note": "Handles all PII languages + Spanish ESCI (Mistral-7B)"
     },
     "worker-4": {
-      "url": "http://expert-worker-4:8005",
+      "url": "http://10.8.100.28:8005",
       "base_model_key": "unsloth/mistral-7b-instruct-v0.3-bnb-4bit",
       "gpu_device": "0",
       "machine": "machine-4",
-      "note": "Handles news classification: EN, DA, ES, PL (Mistral unsloth 4-bit)"
+      "note": "10.8.100.28 GPU 0"
     },
     "worker-5": {
       "url": "http://expert-worker-5:8006",
