@@ -12,7 +12,7 @@ from app.db import get_db
 from app.schemas.auth import User
 from app.services.auth_service import decode_token, get_user
 from app.services.routing_service import routing_service, RoutingService
-from app.services.gateway_service import gateway_service, GatewayService
+from app.services.gateway_service import GatewayService
 
 
 # OAuth2 scheme for token authentication
