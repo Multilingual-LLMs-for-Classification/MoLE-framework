@@ -8,7 +8,7 @@ and expert execution. This is the top-level component that ties everything toget
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 
 import torch
 

@@ -103,6 +103,7 @@ async def lifespan(app: FastAPI):
     app.state.worker_pool = pool
     app.state.worker_id = worker_id
     app.state.experts = experts
+    app.state.gpu_semaphore = asyncio.Semaphore(1)
 
     yield  # Application is running
 

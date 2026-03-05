@@ -5,6 +5,8 @@ The coordinator calls this endpoint after completing the gating pipeline.
 The worker's LLM is already in GPU memory — no load latency.
 """
 
+import asyncio
+import functools
 import time
 import os
 
@@ -61,7 +63,12 @@ async def expert_classify(req: ExpertRequest, request: Request):
     input_data = {"text": req.text}
 
     expert = experts[domain][task]
-    prediction = expert.predict(input_data, prompt, req.language)
+    gpu_semaphore = request.app.state.gpu_semaphore
+    loop = asyncio.get_event_loop()
+    async with gpu_semaphore:
+        prediction = await loop.run_in_executor(
+            None, functools.partial(expert.predict, input_data, prompt, req.language)
+        )
 
     # prediction is a 5-tuple: (cleaned_output, conf, raw_output, base_model_key, prompt_sent)
     if isinstance(prediction, tuple) and len(prediction) >= 3:
