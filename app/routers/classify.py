@@ -5,57 +5,96 @@ Classification router for text classification endpoints.
 import time
 from typing import List
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 
+from app.config import settings
 from app.dependencies import CurrentUser, RoutingServiceDep
 from app.schemas.requests import ClassifyRequest, BatchClassifyRequest
 from app.schemas.responses import (
-    ClassifyResponse,
     BatchClassifyResponse,
+    ClassifyResponse,
+    JobAcceptedResponse,
     SystemStatsResponse,
 )
 from app.services.analytics_service import analytics_service
+from app.services.job_store import job_store
 
 router = APIRouter(prefix="/api/v1/classify", tags=["Classification"])
 
 
-@router.post("", response_model=ClassifyResponse)
+@router.post("")
 async def classify_text(
     request: ClassifyRequest,
     current_user: CurrentUser,
     routing_service: RoutingServiceDep,
-) -> ClassifyResponse:
+    response: Response,
+):
     """
     Classify a single text input.
 
-    The description is combined with the text to form the prompt used
-    for language/domain/task routing. The text is then passed separately
-    to the selected expert for classification.
+    **Coordinator mode (default):** returns HTTP 202 immediately with a job_id.
+    Poll ``GET /api/v1/classify/{job_id}`` for the result.
+
+    **Monolithic mode:** blocks until inference completes and returns the full
+    ClassifyResponse directly (original behaviour, unchanged).
 
     Requires authentication via Bearer token.
     """
     if not routing_service.is_initialized:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Classification service not ready. Models are still loading."
+            detail="Classification service not ready. Models are still loading.",
         )
 
+    if settings.service_mode == "coordinator":
+        if not job_store.is_connected:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Job queue unavailable (Redis not connected).",
+            )
+
+        try:
+            gating = await routing_service.prepare_dispatch(request)
+        except TimeoutError as exc:
+            analytics_service.record_error()
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc))
+        except Exception as exc:
+            analytics_service.record_error()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Gating failed: {exc}",
+            )
+
+        worker_id = routing_service.get_worker_id_for_model(gating["base_model_key"])
+        job_metadata = {
+            "request_id": gating["request_id"],
+            "language": gating["language"],
+            "domain": gating["domain"],
+            "task": gating["task"],
+            "routing_path": gating["routing_path"],
+        }
+        await job_store.enqueue(worker_id, gating["request_id"], gating["payload"], job_metadata)
+
+        response.status_code = status.HTTP_202_ACCEPTED
+        return JobAcceptedResponse(
+            job_id=gating["request_id"],
+            status="queued",
+            poll_url=f"/api/v1/classify/{gating['request_id']}",
+        )
+
+    # Monolithic mode — synchronous, unchanged
     try:
         result = await routing_service.classify(request)
         analytics_service.record_classification(result.model_dump())
         return result
-
-    except TimeoutError as e:
+    except TimeoutError as exc:
         analytics_service.record_error()
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=str(e)
-        )
-    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc))
+    except Exception as exc:
         analytics_service.record_error()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Classification failed: {str(e)}"
+            detail=f"Classification failed: {exc}",
         )
 
 

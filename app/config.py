@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # Database URL for user storage
     database_url: str = "sqlite:////app/data/users.db"
 
+    # Async job queue (Redis)
+    redis_url: str = "redis://localhost:6379"
+    job_ttl_seconds: int = 3600  # how long completed/failed job results are kept
+
 
 # Global settings instance
 settings = Settings()

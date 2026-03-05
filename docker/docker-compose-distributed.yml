@@ -24,6 +24,20 @@ volumes:
 services:
 
   # --------------------------------------------------------------------------
+  # REDIS — async job queue broker for coordinator→worker dispatch
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: mole-redis
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --------------------------------------------------------------------------
   # COORDINATOR
   # Lightweight gating pipeline + HTTP gateway.  No LLM loaded in this process.
   # --------------------------------------------------------------------------
@@ -61,6 +75,9 @@ services:
 
       # Database (SQLite file persisted on host)
       - DATABASE_URL=sqlite:////app/data/users.db
+
+      # Async job queue (Redis runs on the same host via network_mode: host)
+      - REDIS_URL=redis://localhost:6379
     volumes:
       - ./volumes/gating_models:/app/moe_router/gating/models
       - ./volumes/language_models:/app/moe_router/models:ro
@@ -69,6 +86,8 @@ services:
       - ./volumes/db:/app/data
     network_mode: host
     depends_on:
+      redis:
+        condition: service_healthy
       expert-worker-0:
         condition: service_healthy
     restart: unless-stopped

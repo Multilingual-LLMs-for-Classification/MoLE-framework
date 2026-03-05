@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db import create_tables
-from app.routers import admin, analytics, auth, classify, health
+from app.routers import admin, analytics, auth, classify, health, jobs
+from app.services.job_store import job_store
 from app.services.routing_service import routing_service
 from app.middleware.error_handler import ErrorHandlerMiddleware, add_request_id
 
@@ -51,10 +52,20 @@ async def lifespan(app: FastAPI):
         print("WARNING: Failed to initialize routing system")
         print("Service will start but classification endpoints will be unavailable")
 
+    # Connect to Redis and start per-worker drain loops (coordinator mode only)
+    if mode == "coordinator":
+        await job_store.connect()
+        if job_store.is_connected and routing_service._gateway is not None:
+            routing_service._gateway.start_drain_loops(job_store)
+
     yield  # Application runs here
 
     # Shutdown
     print(f"Shutting down MoLE Classification Service [mode={mode}] ...")
+    if mode == "coordinator":
+        if routing_service._gateway is not None:
+            routing_service._gateway.stop_drain_loops()
+        await job_store.close()
 
 
 # Create FastAPI application
@@ -88,6 +99,7 @@ app.include_router(admin.router)
 app.include_router(analytics.router)
 app.include_router(auth.router)
 app.include_router(classify.router)
+app.include_router(jobs.router)
 app.include_router(health.router)
 
 

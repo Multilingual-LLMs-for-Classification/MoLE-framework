@@ -92,6 +92,57 @@ class RoutingService:
             return {"error": "Routing system not initialized"}
         return self._routing_system.get_system_stats()
 
+    def get_worker_id_for_model(self, base_model_key: str) -> str:
+        """Return the worker_id responsible for base_model_key (coordinator mode only)."""
+        if self._gateway is None:
+            raise RuntimeError("Gateway not initialized — only available in coordinator mode")
+        return self._gateway.get_worker_id(base_model_key)
+
+    async def prepare_dispatch(
+        self,
+        request: ClassifyRequest,
+        timeout_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run the gating pipeline only (coordinator mode).
+
+        Returns a dict with all fields needed to enqueue the job and to
+        build the final response once the worker finishes:
+          request_id, payload, base_model_key, routing_path,
+          language, domain, task
+        """
+        if not self.is_initialized:
+            raise RuntimeError("Routing system not initialized")
+
+        timeout = timeout_seconds or settings.request_timeout_seconds
+        request_id = str(uuid4())
+        loop = asyncio.get_event_loop()
+
+        prompt = f"{request.description}\n\n{request.text}"
+        gating = await asyncio.wait_for(
+            loop.run_in_executor(None, self._routing_system.run_gating, prompt),
+            timeout=timeout,
+        )
+
+        payload = {
+            "task_key": f"{gating.domain}/{gating.task}",
+            "language": gating.language,
+            "text": request.text,
+            "description": request.description,
+            "adapter_name": gating.adapter_name,
+            "request_id": request_id,
+        }
+
+        return {
+            "request_id": request_id,
+            "payload": payload,
+            "base_model_key": gating.base_model_key,
+            "routing_path": f"{gating.routing_path} -> gateway:{gating.base_model_key}",
+            "language": gating.language,
+            "domain": gating.domain,
+            "task": gating.task,
+        }
+
     async def classify(
         self,
         request: ClassifyRequest,

@@ -104,6 +104,31 @@ class SystemStatsResponse(BaseModel):
     domains: List[str]
 
 
+class JobAcceptedResponse(BaseModel):
+    """Returned immediately (HTTP 202) when a job is queued for async inference."""
+
+    job_id: str = Field(..., description="Unique job identifier — use this to poll for the result")
+    status: str = Field("queued", description="Always 'queued' at submission time")
+    poll_url: str = Field(..., description="URL to poll for job status and result")
+
+
+class JobStatusResponse(BaseModel):
+    """Returned by the job polling endpoint."""
+
+    status: str = Field(..., description="'queued', 'done', or 'error'")
+    request_id: Optional[str] = None
+    language: Optional[str] = None
+    domain: Optional[str] = None
+    task: Optional[str] = None
+    routing_path: Optional[str] = None
+    result: Optional[str] = None
+    confidence: Optional[float] = None
+    processing_time_ms: Optional[float] = None
+    worker_id: Optional[str] = None
+    model_key: Optional[str] = None
+    detail: Optional[str] = Field(None, description="Error detail (status='error' only)")
+
+
 class ErrorResponse(BaseModel):
     """Standard error response."""
 
