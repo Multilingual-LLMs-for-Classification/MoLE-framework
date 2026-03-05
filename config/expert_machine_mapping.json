@@ -9,11 +9,11 @@
       "note": "csetuf07 (coordinator machine) — host networking mode, same host"
     },
     "worker-1": {
-      "url": "http://expert-worker-1:8002",
+      "url": "http://10.8.100.28:8002",
       "base_model_key": "qwen2.5-7b-instruct",
       "gpu_device": "0",
       "machine": "machine-1",
-      "note": "Handles Spanish / Japanese sentiment & ESCI (Qwen2.5)"
+      "note": "Handles Spanish / Japanese sentiment rating (finance/rating)"
     },
     "worker-2": {
       "url": "http://expert-worker-2:8003",
