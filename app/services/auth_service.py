@@ -3,39 +3,19 @@ Authentication service for JWT token management.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict
+from typing import Optional
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.db import UserRecord
 from app.schemas.auth import TokenData, UserInDB
 
 
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
-# Simple in-memory user store (replace with database in production)
-_users_db: Dict[str, UserInDB] = {}
-
-
-def _init_users_from_config():
-    """Initialize users from config (for demo purposes)."""
-    global _users_db
-    if settings.users_store:
-        for user_entry in settings.users_store.split(","):
-            if ":" in user_entry:
-                username, hashed_password = user_entry.split(":", 1)
-                _users_db[username.strip()] = UserInDB(
-                    username=username.strip(),
-                    hashed_password=hashed_password.strip(),
-                    disabled=False
-                )
-
-
-# Initialize users on module load
-_init_users_from_config()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -48,14 +28,21 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def get_user(username: str) -> Optional[UserInDB]:
-    """Get user from store by username."""
-    return _users_db.get(username)
+def get_user(db: Session, username: str) -> Optional[UserInDB]:
+    """Get user from database by username."""
+    record = db.query(UserRecord).filter(UserRecord.username == username).first()
+    if record is None:
+        return None
+    return UserInDB(
+        username=record.username,
+        hashed_password=record.hashed_password,
+        disabled=record.disabled,
+    )
 
 
-def authenticate_user(username: str, password: str) -> Optional[UserInDB]:
+def authenticate_user(db: Session, username: str, password: str) -> Optional[UserInDB]:
     """Authenticate user with username and password."""
-    user = get_user(username)
+    user = get_user(db, username)
     if not user:
         return None
     if not verify_password(password, user.hashed_password):
@@ -63,19 +50,21 @@ def authenticate_user(username: str, password: str) -> Optional[UserInDB]:
     return user
 
 
-def create_user(username: str, password: str) -> UserInDB:
-    """Create a new user."""
-    if username in _users_db:
+def create_user(db: Session, username: str, password: str) -> UserInDB:
+    """Create a new user in the database."""
+    if db.query(UserRecord).filter(UserRecord.username == username).first():
         raise ValueError(f"User {username} already exists")
 
     hashed_password = get_password_hash(password)
-    user = UserInDB(
-        username=username,
-        hashed_password=hashed_password,
-        disabled=False
+    record = UserRecord(username=username, hashed_password=hashed_password, disabled=False)
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return UserInDB(
+        username=record.username,
+        hashed_password=record.hashed_password,
+        disabled=record.disabled,
     )
-    _users_db[username] = user
-    return user
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

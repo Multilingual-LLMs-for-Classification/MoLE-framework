@@ -51,9 +51,8 @@ class Settings(BaseSettings):
     # Path to config/expert_machine_mapping.json (used in coordinator mode)
     expert_mapping_path: str = str(_PROJECT_ROOT / "config" / "expert_machine_mapping.json")
 
-    # User Store (simple in-memory for demo; replace with DB in production)
-    # Format: "username:hashed_password,username2:hashed_password2"
-    users_store: str = ""
+    # Database URL for user storage
+    database_url: str = "sqlite:////app/data/users.db"
 
 
 # Global settings instance

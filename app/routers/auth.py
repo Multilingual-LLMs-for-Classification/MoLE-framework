@@ -7,8 +7,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.db import get_db
 from app.schemas.auth import Token, UserCreate, User
 from app.services.auth_service import (
     authenticate_user,
@@ -22,7 +24,8 @@ router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
 @router.post("/token", response_model=Token)
 async def login_for_access_token(
-    form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    db: Session = Depends(get_db),
 ) -> Token:
     """
     OAuth2 compatible token login.
@@ -36,7 +39,7 @@ async def login_for_access_token(
     Raises:
         HTTPException: If authentication fails
     """
-    user = authenticate_user(form_data.username, form_data.password)
+    user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -54,7 +57,10 @@ async def login_for_access_token(
 
 
 @router.post("/register", response_model=User, status_code=status.HTTP_201_CREATED)
-async def register_user(user_data: UserCreate) -> User:
+async def register_user(
+    user_data: UserCreate,
+    db: Session = Depends(get_db),
+) -> User:
     """
     Register a new user.
 
@@ -67,11 +73,11 @@ async def register_user(user_data: UserCreate) -> User:
     Raises:
         HTTPException: If username already exists
     """
-    if get_user(user_data.username):
+    if get_user(db, user_data.username):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered"
         )
 
-    user = create_user(user_data.username, user_data.password)
+    user = create_user(db, user_data.username, user_data.password)
     return User(username=user.username, disabled=user.disabled)

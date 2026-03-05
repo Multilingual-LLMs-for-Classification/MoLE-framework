@@ -6,7 +6,9 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
 
+from app.db import get_db
 from app.schemas.auth import User
 from app.services.auth_service import decode_token, get_user
 from app.services.routing_service import routing_service, RoutingService
@@ -18,7 +20,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 
 
 async def get_current_user(
-    token: Annotated[str, Depends(oauth2_scheme)]
+    token: Annotated[str, Depends(oauth2_scheme)],
+    db: Session = Depends(get_db),
 ) -> User:
     """
     Dependency to get current authenticated user from JWT token.
@@ -42,7 +45,7 @@ async def get_current_user(
     if token_data is None or token_data.username is None:
         raise credentials_exception
 
-    user = get_user(token_data.username)
+    user = get_user(db, token_data.username)
     if user is None:
         raise credentials_exception
 

@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.db import create_tables
 from app.routers import admin, analytics, auth, classify, health
 from app.services.routing_service import routing_service
 from app.middleware.error_handler import ErrorHandlerMiddleware, add_request_id
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI):
     - Shutdown: Cleanup resources
     """
     # Startup
+    create_tables()
     mode = settings.service_mode
     print("=" * 60)
     print(f"Starting MoLE Classification Service  [mode={mode}]")
