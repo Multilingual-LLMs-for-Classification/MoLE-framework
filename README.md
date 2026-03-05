@@ -83,14 +83,15 @@ Each worker runs on a **dedicated GPU machine**. The coordinator runs separately
 MoLE-framework/
 ├── app/                              # Coordinator FastAPI service
 │   ├── main.py                       # Entry point (mode-aware startup)
-│   ├── config.py                     # Settings (SERVICE_MODE, EXPERT_MAPPING_PATH …)
-│   ├── dependencies.py               # DI: routing, gateway services
+│   ├── config.py                     # Settings (SERVICE_MODE, DATABASE_URL …)
+│   ├── db.py                         # SQLAlchemy engine, UserRecord model, get_db()
+│   ├── dependencies.py               # DI: routing, gateway, auth services
 │   ├── routers/                      # API endpoints (auth, classify, health, admin)
 │   ├── schemas/                      # Pydantic request/response models
 │   └── services/
 │       ├── routing_service.py        # Coordinator vs monolithic dispatch
-│       ├── gateway_service.py        # HTTP dispatcher to expert workers  ← NEW
-│       ├── auth_service.py
+│       ├── gateway_service.py        # HTTP dispatcher to expert workers
+│       ├── auth_service.py           # JWT + bcrypt + DB-backed user CRUD
 │       ├── analytics_service.py
 │       └── config_service.py
 ├── expert_worker/                    # Expert worker FastAPI service  ← NEW
@@ -114,8 +115,13 @@ MoLE-framework/
 ├── docker/
 │   ├── Dockerfile
 │   ├── docker-compose.yml            # Original monolithic deployment
-│   ├── docker-compose-distributed.yml  # Coordinator + Worker 0 on Machine 0  ← NEW
-│   └── docker-compose-worker.yml       # Template for remote workers  ← NEW
+│   ├── docker-compose-distributed.yml  # Coordinator + Worker 0 on Machine 0
+│   ├── docker-compose-worker.yml       # Template for remote workers
+│   └── volumes/
+│       ├── gating_models/            # Domain classifier + Q-learning weights
+│       ├── language_models/          # FastText lid.176.bin
+│       ├── adapter_weights/          # LoRA adapters per expert
+│       └── db/                       # SQLite users.db (auto-created on first run)
 ├── .env.example
 └── requirements.txt
 ```
@@ -200,7 +206,13 @@ EXPERT_MAPPING_PATH=/app/config/expert_machine_mapping.json
 JWT_SECRET_KEY=<your-secret-key-change-this>
 REQUEST_TIMEOUT_SECONDS=300
 CUDA_VISIBLE_DEVICES=0
+DATABASE_URL=sqlite:////app/data/users.db
 ```
+
+> The `DATABASE_URL` points inside the container. The actual file is stored on the host at
+> `docker/volumes/db/users.db` via the bind mount in `docker-compose-distributed.yml` and
+> **persists across container restarts**. The `users` table is created automatically on
+> first startup — no manual migration step needed.
 
 Open `config/expert_machine_mapping.json` and set the real IPs for active workers.
 Leave inactive workers pointing to placeholder hostnames for now:
@@ -225,6 +237,7 @@ docker-compose -f docker-compose-distributed.yml logs -f
 ```
 
 **What happens:**
+- Coordinator creates the SQLite `users` table at `docker/volumes/db/users.db` (instant, first run only)
 - Coordinator loads gating models (FastText + XLM-RoBERTa + Q-learning, ~1–2 min)
 - Workers are remote and started separately (Step 5)
 
@@ -318,14 +331,14 @@ docker-compose -f docker/docker-compose-distributed.yml restart coordinator
 ### Step 7 — Verify end-to-end
 
 ```bash
-# 1. Register a user (on Machine 0)
+# 1. Register a user
 curl -X POST http://localhost:8000/api/v1/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "changeme123"}'
+  -d '{"username": "alice", "password": "securepassword123"}'
 
 # 2. Get a JWT token
 TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/token \
-  -d "username=admin&password=changeme123" \
+  -d "username=alice&password=securepassword123" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
 # 3. Send a classification request
@@ -375,6 +388,50 @@ watch -n 2 nvidia-smi --query-gpu=index,name,memory.used,memory.free,utilization
 
 ---
 
+## User Management
+
+Users are stored in a SQLite database at `docker/volumes/db/users.db` on the host.
+The table is created automatically on first startup.
+
+### Register via the API (normal flow)
+
+```bash
+# Register a new user
+curl -X POST http://localhost:8000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username": "alice", "password": "securepassword123"}'
+
+# Login and get a JWT token
+curl -X POST http://localhost:8000/api/v1/auth/token \
+  -d "username=alice&password=securepassword123"
+```
+
+### Inspect the database directly
+
+```bash
+sqlite3 docker/volumes/db/users.db
+
+# Inside the SQLite shell:
+.headers on
+.mode column
+SELECT id, username, disabled FROM users;
+.quit
+```
+
+### Disable or delete a user
+
+```bash
+# Disable
+sqlite3 docker/volumes/db/users.db \
+  "UPDATE users SET disabled=1 WHERE username='alice';"
+
+# Delete
+sqlite3 docker/volumes/db/users.db \
+  "DELETE FROM users WHERE username='alice';"
+```
+
+---
+
 ## Running Without Docker (Development)
 
 If you want to run services directly without Docker:
@@ -388,6 +445,7 @@ pip install -r requirements.txt
 export SERVICE_MODE=coordinator
 export EXPERT_MAPPING_PATH=$(pwd)/config/expert_machine_mapping.json
 export CUDA_VISIBLE_DEVICES=0
+export DATABASE_URL=sqlite:///./users.db   # stored in current directory
 
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 ```
@@ -477,6 +535,7 @@ curl http://<worker-ip>:<worker-port>/api/v1/health/ready
 | `JWT_SECRET_KEY` | (random) | JWT signing secret — **change in production** |
 | `CUDA_VISIBLE_DEVICES` | `0` | GPU for gating models |
 | `REQUEST_TIMEOUT_SECONDS` | `600` | Total request timeout (gating + worker inference) |
+| `DATABASE_URL` | `sqlite:////app/data/users.db` | SQLAlchemy DB URL — file persisted at `docker/volumes/db/users.db` |
 
 ### Expert Worker (`expert_worker/`)
 
