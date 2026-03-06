@@ -16,12 +16,14 @@ from setuptools import find_packages, setup
 
 setup(
     name="moe-classifier",
-    version="1.0.0",
+    version="2.0.0",
     description="Multilingual Mixture-of-Experts text classification library",
     long_description=(
         "A Python SDK that wraps a hierarchical MOE classification pipeline: "
         "Language Detection → Domain Classification → Task Routing → Expert Execution. "
-        "Supports 176 languages and multiple domain/task combinations via LoRA-adapted LLMs."
+        "Supports 176 languages and multiple domain/task combinations via LoRA-adapted LLMs. "
+        "Provides local (single GPU), remote (HTTP client), and distributed "
+        "(coordinator + workers) deployment modes."
     ),
     python_requires=">=3.10",
     packages=find_packages(
@@ -41,6 +43,7 @@ setup(
         "accelerate>=0.24.0",
         "numpy>=1.24.0",
         "scikit-learn>=1.3.0",
+        "httpx>=0.24.0",
     ],
     extras_require={
         # Install the full web service dependencies as well
