@@ -3,7 +3,28 @@ Result types for the MOE Classifier SDK.
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, List, Optional
+
+
+class DeploymentMode(str, Enum):
+    """
+    Deployment mode for the MOE Classifier.
+
+    Using ``str, Enum`` so users can pass plain strings::
+
+        MOEClassifier(deployment="local")       # works
+        MOEClassifier(deployment=DeploymentMode.LOCAL)  # also works
+    """
+
+    LOCAL = "local"
+    """Full in-process pipeline on a single GPU (monolithic mode)."""
+
+    REMOTE = "remote"
+    """HTTP client to a running MoLE coordinator / monolithic service."""
+
+    DISTRIBUTED = "distributed"
+    """Gating locally + HTTP dispatch to remote expert workers."""
 
 
 @dataclass

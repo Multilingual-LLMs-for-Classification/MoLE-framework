@@ -1,39 +1,98 @@
 """
 MOEClassifier — main entry point for the moe-classifier SDK.
 
-Usage::
+Supports three deployment modes:
+
+**Local** (default) — full in-process pipeline on a single GPU::
 
     from moe_classifier import MOEClassifier
 
     clf = MOEClassifier()
-    clf.initialize()                          # load models once
+    clf.initialize()
+    result = clf.classify(text="Great product!", description="Rate 1–5.")
 
-    result = clf.classify(
-        text="Great product, loved it!",
-        description="Rate this review 1–5 stars.",
+**Remote** — HTTP client to a running MoLE service::
+
+    clf = MOEClassifier(
+        deployment="remote",
+        coordinator_url="http://10.8.100.21:8000",
+        credentials={"username": "alice", "password": "secret"},
     )
-    print(result.result, result.confidence)
+    clf.initialize()
+    result = clf.classify(text="Great product!", description="Rate 1–5.")
+
+**Distributed** — gating locally + dispatch to remote workers::
+
+    clf = MOEClassifier(
+        deployment="distributed",
+        expert_mapping="config/expert_machine_mapping.json",
+    )
+    clf.initialize()
+    result = clf.classify(text="Great product!", description="Rate 1–5.")
 """
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
-from .types import BatchItem, BatchResult, ClassificationResult
+from .types import (
+    BatchItem,
+    BatchResult,
+    ClassificationResult,
+    DeploymentMode,
+)
 
 
 class MOEClassifier:
     """
-    Thin wrapper around PromptRoutingSystem providing a clean SDK API.
+    Multilingual Mixture-of-Experts text classifier.
 
     The underlying ML models are heavy (language detector, XLM-RoBERTa
     domain/task classifiers, and LoRA-adapted LLM experts), so
     initialization is explicit via :meth:`initialize` rather than
     happening in ``__init__``.  Call ``initialize()`` once, then
     reuse the same instance for all subsequent calls.
+
+    Parameters
+    ----------
+    deployment : str or DeploymentMode
+        ``"local"`` (default), ``"remote"``, or ``"distributed"``.
+    coordinator_url : str, optional
+        Base URL of a running MoLE service.  **Required** for ``"remote"`` mode.
+    credentials : dict, optional
+        ``{"username": "...", "password": "..."}`` for automatic JWT
+        authentication.  Used in ``"remote"`` mode.
+    token : str, optional
+        Pre-existing JWT access token.  If provided, ``credentials`` is
+        ignored.  Used in ``"remote"`` mode.
+    expert_mapping : str, optional
+        Path to ``expert_machine_mapping.json``.  Used in ``"distributed"``
+        mode.  Defaults to ``config/expert_machine_mapping.json``.
     """
 
-    def __init__(self) -> None:
-        self._system = None
+    def __init__(
+        self,
+        deployment: Union[str, DeploymentMode] = "local",
+        *,
+        coordinator_url: Optional[str] = None,
+        credentials: Optional[Dict[str, str]] = None,
+        token: Optional[str] = None,
+        expert_mapping: Optional[str] = None,
+    ) -> None:
+        # Coerce string to enum
+        try:
+            self._deployment = DeploymentMode(deployment)
+        except ValueError:
+            valid = ", ".join(f'"{m.value}"' for m in DeploymentMode)
+            raise ValueError(
+                f"Invalid deployment mode: {deployment!r}.  "
+                f"Valid modes: {valid}"
+            )
+
+        self._coordinator_url = coordinator_url
+        self._credentials = credentials
+        self._token = token
+        self._expert_mapping = expert_mapping
+        self._backend = None
         self._initialized = False
 
     # ------------------------------------------------------------------
@@ -42,34 +101,58 @@ class MOEClassifier:
 
     def initialize(self) -> None:
         """
-        Load all models and prepare the routing system.
+        Load models / connect to services based on the deployment mode.
 
         This must be called before :meth:`classify` or
-        :meth:`classify_batch`.  It may take tens of seconds on first
-        run (model downloads + GPU loading).
+        :meth:`classify_batch`.  Depending on the mode it may take
+        a moment (local: model loading) or be near-instant (remote).
 
         Raises:
-            RuntimeError: If the underlying routing system fails to load.
+            RuntimeError: If initialization fails.
         """
-        try:
-            from moe_router.gating.components.routing_system import PromptRoutingSystem
-        except ImportError as exc:
-            raise RuntimeError(
-                "moe_router package not found.  Make sure you are running "
-                "from the moe-classification-service directory and the "
-                "package is installed (pip install -e .)."
-            ) from exc
+        self._backend = self._create_backend()
+        self._backend.initialize()
+        self._initialized = True
 
-        try:
-            self._system = PromptRoutingSystem(training_mode=False)
-            self._initialized = True
-        except Exception as exc:
-            raise RuntimeError(f"Failed to initialize routing system: {exc}") from exc
+    def _create_backend(self):
+        """Instantiate the correct backend for the chosen deployment mode."""
+        mode = self._deployment
+
+        if mode == DeploymentMode.LOCAL:
+            from .backends.local import LocalBackend
+            return LocalBackend()
+
+        elif mode == DeploymentMode.REMOTE:
+            if not self._coordinator_url:
+                raise ValueError(
+                    "deployment='remote' requires coordinator_url=... "
+                    "(e.g. 'http://localhost:8000')"
+                )
+            from .backends.remote import RemoteBackend
+            return RemoteBackend(
+                coordinator_url=self._coordinator_url,
+                credentials=self._credentials,
+                token=self._token,
+            )
+
+        elif mode == DeploymentMode.DISTRIBUTED:
+            from .backends.distributed import DistributedBackend
+            return DistributedBackend(
+                expert_mapping=self._expert_mapping,
+            )
+
+        else:
+            raise ValueError(f"Unknown deployment mode: {mode}")
 
     @property
     def is_ready(self) -> bool:
         """True after :meth:`initialize` has completed successfully."""
-        return self._initialized and self._system is not None
+        return self._initialized and self._backend is not None and self._backend.is_ready
+
+    @property
+    def deployment_mode(self) -> DeploymentMode:
+        """The deployment mode this classifier was configured with."""
+        return self._deployment
 
     def _require_ready(self) -> None:
         if not self.is_ready:
@@ -121,31 +204,11 @@ class MOEClassifier:
         if not text or not text.strip():
             raise ValueError("'text' must be a non-empty string.")
 
-        # Combine description and text into the routing prompt (mirrors the
-        # FastAPI service's _sync_classify logic).
-        prompt = f"{description}\n\n{text}".strip() if description else text
-
-        t0 = time.perf_counter()
-        raw = self._system.route_prompt(
-            prompt=prompt,
-            input_data={"text": text},
-        )
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-
-        return ClassificationResult(
-            language=raw.get("language", "unknown"),
-            domain=raw.get("domain", "unknown"),
-            task=raw.get("task", "unknown"),
-            result=str(raw.get("result", "")),
-            routing_path=raw.get("routing_path", ""),
-            confidence=raw.get("expert_confidence"),
-            domain_probabilities=(
-                raw.get("domain_probabilities") if return_domain_probabilities else None
-            ),
-            raw_response=(
-                raw.get("raw_response") if return_raw_response else None
-            ),
-            processing_time_ms=elapsed_ms,
+        return self._backend.classify(
+            text=text,
+            description=description,
+            return_domain_probabilities=return_domain_probabilities,
+            return_raw_response=return_raw_response,
         )
 
     def classify_batch(
@@ -247,8 +310,8 @@ class MOEClassifier:
             RuntimeError: If the classifier has not been initialized.
         """
         self._require_ready()
-        return self._system.get_system_stats()
+        return self._backend.get_stats()
 
     def __repr__(self) -> str:
         state = "ready" if self.is_ready else "not initialized"
-        return f"MOEClassifier({state})"
+        return f"MOEClassifier(deployment={self._deployment.value!r}, {state})"
