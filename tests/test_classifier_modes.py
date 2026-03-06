@@ -11,9 +11,12 @@ Run:
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 from moe_classifier import MOEClassifier, DeploymentMode, ClassificationResult
+from moe_classifier.backends.local import LocalBackend
+from moe_classifier.backends.remote import RemoteBackend
+from moe_classifier.backends.distributed import DistributedBackend
 
 
 # ======================================================================
@@ -112,8 +115,6 @@ class TestRemoteModeValidation:
 class TestLocalBackend:
     def test_initialize_and_classify(self):
         """LocalBackend should call PromptRoutingSystem.route_prompt()."""
-        from moe_classifier.backends.local import LocalBackend
-
         mock_system = MagicMock()
         mock_system.route_prompt.return_value = {
             "language": "english",
@@ -147,8 +148,6 @@ class TestLocalBackend:
         assert "Great product!" in call_args[1]["prompt"] or "Great product!" in str(call_args)
 
     def test_get_stats(self):
-        from moe_classifier.backends.local import LocalBackend
-
         mock_system = MagicMock()
         mock_system.get_system_stats.return_value = {"total_domains": 1}
 
@@ -173,7 +172,6 @@ class TestRemoteBackend:
         mock_client.headers = {}
         MockClient.return_value = mock_client
 
-        from moe_classifier.backends.remote import RemoteBackend
         backend = RemoteBackend(
             coordinator_url="http://localhost:8000",
             token="my-jwt-token",
@@ -197,7 +195,6 @@ class TestRemoteBackend:
         mock_client.get.return_value = MagicMock(status_code=200)
         MockClient.return_value = mock_client
 
-        from moe_classifier.backends.remote import RemoteBackend
         backend = RemoteBackend(
             coordinator_url="http://localhost:8000",
             credentials={"username": "alice", "password": "secret"},
@@ -232,7 +229,6 @@ class TestRemoteBackend:
         mock_client.post.return_value = mock_response
         MockClient.return_value = mock_client
 
-        from moe_classifier.backends.remote import RemoteBackend
         backend = RemoteBackend(
             coordinator_url="http://localhost:8000",
             token="test-token",
@@ -309,7 +305,6 @@ class TestDistributedBackend:
             with os.fdopen(fd, "w") as f:
                 json.dump(mapping, f)
 
-            from moe_classifier.backends.distributed import DistributedBackend
             backend = DistributedBackend(expert_mapping=mapping_path)
             # Directly inject mock system (bypass heavy PromptRoutingSystem init)
             backend._system = mock_system
