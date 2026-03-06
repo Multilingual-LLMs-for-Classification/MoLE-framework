@@ -290,7 +290,8 @@ class TestDistributedBackend:
         MockHttpClient.return_value = mock_http
 
         # Create a temp mapping file
-        import tempfile, os
+        import tempfile
+        import os
         mapping = {
             "model_to_worker": {"llama-2-7b-hf": "worker-0"},
             "workers": {
