@@ -41,6 +41,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: |
-          docker build -f docker/Dockerfile -t moe-classification-service:test .
+      - name: Build distributed stack
+        run: docker compose -f docker/docker-compose-distributed.yml build
+
+      - name: Build worker image
+        env:
+          WORKER_MODEL_KEY: test
+          ADAPTER_PATH: /tmp
+          HF_CACHE_PATH: /tmp
+          CONFIG_PATH: ./config
+        run: docker compose -f docker/docker-compose-worker.yml build
