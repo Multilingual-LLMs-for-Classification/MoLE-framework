@@ -14,6 +14,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from moe_classifier import MOEClassifier, DeploymentMode, ClassificationResult
+from moe_classifier import PipelineConfig, MOETrainer
 from moe_classifier.backends.local import LocalBackend
 from moe_classifier.backends.remote import RemoteBackend
 from moe_classifier.backends.distributed import DistributedBackend
@@ -393,3 +394,132 @@ class TestMOEClassifierDelegation:
         assert batch.successful == 1
         assert batch.failed == 1
         assert batch.items[1].error == "Model error"
+
+
+# ======================================================================
+# PipelineConfig
+# ======================================================================
+
+class TestPipelineConfig:
+    def test_defaults_are_none(self):
+        config = PipelineConfig()
+        assert config.language_model is None
+        assert config.expert_registry is None
+        assert config.domain_model_dir is None
+        assert config.domain_model_name == "xlm-roberta-base"
+        assert config.task_router_dir is None
+        assert config.task_encoder_name == "xlm-roberta-base"
+
+    def test_custom_values(self):
+        config = PipelineConfig(
+            domain_model_dir="models/my_domain/",
+            expert_registry="config/my_registry.json",
+            language_model="models/lid.custom.bin",
+        )
+        assert config.domain_model_dir == "models/my_domain/"
+        assert config.expert_registry == "config/my_registry.json"
+        assert config.language_model == "models/lid.custom.bin"
+        # Others remain default
+        assert config.task_router_dir is None
+
+    def test_pipeline_config_passed_to_local_backend(self):
+        """Config should propagate from MOEClassifier -> LocalBackend."""
+        config = PipelineConfig(domain_model_dir="models/custom/")
+        clf = MOEClassifier(pipeline_config=config)
+        backend = clf._create_backend()
+        assert isinstance(backend, LocalBackend)
+        assert backend._config is config
+        assert backend._config.domain_model_dir == "models/custom/"
+
+    def test_pipeline_config_passed_to_distributed_backend(self):
+        """Config should propagate from MOEClassifier -> DistributedBackend."""
+        config = PipelineConfig(expert_registry="config/custom.json")
+        clf = MOEClassifier(deployment="distributed", pipeline_config=config)
+        backend = clf._create_backend()
+        assert isinstance(backend, DistributedBackend)
+        assert backend._config is config
+        assert backend._config.expert_registry == "config/custom.json"
+
+    def test_no_config_means_none_on_backend(self):
+        """Without PipelineConfig, backend._config should be None."""
+        clf = MOEClassifier()
+        backend = clf._create_backend()
+        assert backend._config is None
+
+
+# ======================================================================
+# MOETrainer
+# ======================================================================
+
+class TestMOETrainer:
+    def test_default_construction(self):
+        trainer = MOETrainer()
+        assert isinstance(trainer._config, PipelineConfig)
+        assert trainer._system is None
+
+    def test_construction_with_config(self):
+        config = PipelineConfig(domain_model_dir="models/custom/")
+        trainer = MOETrainer(pipeline_config=config)
+        assert trainer._config is config
+
+    def test_train_domain_classifier_delegates(self):
+        """train_domain_classifier should call through to PromptRoutingSystem."""
+        trainer = MOETrainer()
+
+        # Inject a mock system to bypass heavy initialization
+        mock_system = MagicMock()
+        mock_system.train_domain_classifier.return_value = {"accuracy": 0.95}
+        mock_system.domain_classifier = MagicMock()
+        trainer._system = mock_system
+
+        data = [
+            {"prompt": "Test text", "domain": "finance"},
+            {"prompt": "Another text", "domain": "health"},
+        ]
+        result = trainer.train_domain_classifier(data, epochs=3)
+
+        # Verify delegation
+        mock_system.train_domain_classifier.assert_called_once()
+        call_args = mock_system.train_domain_classifier.call_args
+        assert call_args[0][0] == data
+        assert call_args[1]["epochs"] == 3
+
+        # Verify model was saved
+        mock_system.domain_classifier.save_model.assert_called_once()
+        assert result["accuracy"] == 0.95
+
+    def test_train_task_routers_delegates(self):
+        """train_task_routers should call through to PromptRoutingSystem."""
+        trainer = MOETrainer()
+
+        mock_system = MagicMock()
+        mock_system.task_classifier = MagicMock()
+        trainer._system = mock_system
+
+        data = [
+            {"prompt": "Rate this.", "domain": "finance", "task": "rating"},
+        ]
+        trainer.train_task_routers(data)
+
+        mock_system.train_q_routers.assert_called_once_with(data)
+        mock_system.task_classifier.save_models.assert_called_once()
+
+    def test_train_domain_classifier_custom_output(self, tmp_path):
+        """When output_dir is specified, model should be saved there."""
+        trainer = MOETrainer()
+
+        mock_system = MagicMock()
+        mock_system.train_domain_classifier.return_value = {}
+        mock_system.domain_classifier = MagicMock()
+        trainer._system = mock_system
+
+        out = str(tmp_path / "my_model")
+        trainer.train_domain_classifier(
+            [{"prompt": "test", "domain": "d"}],
+            output_dir=out,
+        )
+
+        # Verify save was called with the custom path
+        mock_system.domain_classifier.save_model.assert_called_once_with(
+            filepath=out,
+        )

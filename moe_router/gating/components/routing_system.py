@@ -40,20 +40,44 @@ class GatingResult:
 
 
 class PromptRoutingSystem:
-    def __init__(self, training_mode: bool = False, coordinator_only: bool = False):
+    def __init__(
+        self,
+        training_mode: bool = False,
+        coordinator_only: bool = False,
+        *,
+        language_model: str = None,
+        expert_registry_override: str = None,
+        domain_model_dir: str = None,
+        domain_model_name: str = "xlm-roberta-base",
+        task_router_dir: str = None,
+        task_encoder_name: str = "xlm-roberta-base",
+    ):
         config_path = _PACKAGE_ROOT / "experts" / "config"
-        self.expert_registry_path = config_path / "experts_registry.json"
         self.coordinator_only = coordinator_only
+
+        # Expert registry: use override or default
+        if expert_registry_override:
+            self.expert_registry_path = Path(expert_registry_override)
+        else:
+            self.expert_registry_path = config_path / "experts_registry.json"
 
         # Load registry JSON for model resolution (needed in both modes)
         with open(self.expert_registry_path, "r", encoding="utf-8") as f:
             self._registry = json.load(f)
 
-        # Initialize language detector with registry path
-        self.language_detector = LanguageDetector(registry_path=self.expert_registry_path)
+        # Initialize language detector with registry path (+ optional custom FastText model)
+        self.language_detector = LanguageDetector(
+            registry_path=self.expert_registry_path,
+            model_path=language_model,
+        )
+
+        # Domain classifier: use overrides or defaults
+        _domain_dir = Path(domain_model_dir) if domain_model_dir else (
+            _PACKAGE_ROOT / "gating" / "models" / "domain_xlmr"
+        )
         self.domain_classifier = DomainClassifier(
-            model_name="xlm-roberta-base",
-            model_dir=_PACKAGE_ROOT / "gating" / "models" / "domain_xlmr",
+            model_name=domain_model_name,
+            model_dir=_domain_dir,
             max_len=128,
             alpha_proto=0.30,
             proto_temp=10.0
@@ -67,14 +91,17 @@ class PromptRoutingSystem:
             print("model_config.json not found - skipping legacy ModelLoader (not needed for LLMAdapterPool)")
             self.model_loader = None
 
-        self.domain_tasks_obj = DomainTaskLoader(config_path / "experts_registry.json")
+        self.domain_tasks_obj = DomainTaskLoader(str(self.expert_registry_path))
         self.domain_tasks = self.domain_tasks_obj.domain_tasks if hasattr(self.domain_tasks_obj, "domain_tasks") else self.domain_tasks_obj
 
-        # Q-learning task classifier
+        # Q-learning task classifier: use overrides or defaults
+        _task_dir = Path(task_router_dir) if task_router_dir else (
+            _PACKAGE_ROOT / "gating" / "models" / "task_routers_qlearning"
+        )
         self.task_classifier = QLearningTaskClassifier(
             self.domain_tasks,
-            model_dir=_PACKAGE_ROOT / "gating" / "models" / "task_routers_qlearning",
-            encoder_name="xlm-roberta-base",
+            model_dir=_task_dir,
+            encoder_name=task_encoder_name,
             max_len=128,
             batch_size=16,
             lr=1e-5,

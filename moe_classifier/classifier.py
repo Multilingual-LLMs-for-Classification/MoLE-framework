@@ -40,6 +40,7 @@ from .types import (
     ClassificationResult,
     DeploymentMode,
 )
+from .pipeline_config import PipelineConfig
 
 
 class MOEClassifier:
@@ -77,6 +78,7 @@ class MOEClassifier:
         credentials: Optional[Dict[str, str]] = None,
         token: Optional[str] = None,
         expert_mapping: Optional[str] = None,
+        pipeline_config: Optional[PipelineConfig] = None,
     ) -> None:
         # Coerce string to enum
         try:
@@ -92,6 +94,7 @@ class MOEClassifier:
         self._credentials = credentials
         self._token = token
         self._expert_mapping = expert_mapping
+        self._pipeline_config = pipeline_config
         self._backend = None
         self._initialized = False
 
@@ -120,7 +123,7 @@ class MOEClassifier:
 
         if mode == DeploymentMode.LOCAL:
             from .backends.local import LocalBackend
-            return LocalBackend()
+            return LocalBackend(pipeline_config=self._pipeline_config)
 
         elif mode == DeploymentMode.REMOTE:
             if not self._coordinator_url:
@@ -139,6 +142,7 @@ class MOEClassifier:
             from .backends.distributed import DistributedBackend
             return DistributedBackend(
                 expert_mapping=self._expert_mapping,
+                pipeline_config=self._pipeline_config,
             )
 
         else:
