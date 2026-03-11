@@ -69,9 +69,22 @@ class RoutingService:
             )
 
             if coordinator_only:
-                from app.services.gateway_service import GatewayService
-                self._gateway = GatewayService(settings.expert_mapping_path)
-                print("Gateway service initialized.")
+                if settings.use_ray:
+                    # Ray mode: workers are Ray Actors on the cluster — no HTTP,
+                    # no Docker worker containers, no Redis queue.
+                    from ray_cluster.spawn_workers import spawn_workers
+                    from ray_cluster.ray_gateway_service import RayGatewayService
+                    model_to_actor = spawn_workers(
+                        settings.expert_mapping_path,
+                        settings.expert_registry_path,
+                    )
+                    self._gateway = RayGatewayService(model_to_actor)
+                    print("Ray gateway service initialized.")
+                else:
+                    # Legacy mode: workers are separate FastAPI Docker containers.
+                    from app.services.gateway_service import GatewayService
+                    self._gateway = GatewayService(settings.expert_mapping_path)
+                    print("Gateway service initialized.")
 
             self._initialized = True
             print(f"PromptRoutingSystem initialized successfully (mode={mode_label})")

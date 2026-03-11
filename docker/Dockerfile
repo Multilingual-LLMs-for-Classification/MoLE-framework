@@ -7,12 +7,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
+# psmisc (killall) and procps (ps) are required by Ray for process management
 RUN apt-get update && apt-get install -y \
     python3.11 \
     python3.11-venv \
     python3-pip \
     curl \
     git \
+    psmisc \
+    procps \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.11 /usr/bin/python
@@ -31,6 +34,7 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
 COPY app/ ./app/
 COPY moe_router/ ./moe_router/
 COPY expert_worker/ ./expert_worker/
+COPY ray_cluster/ ./ray_cluster/
 
 # Set Python path
 ENV PYTHONPATH="/app"
@@ -43,8 +47,12 @@ RUN useradd -m -u 1000 appuser && \
 # In production, configure proper permissions
 # USER appuser
 
-# Expose port
-EXPOSE 8000
+# Expose ports
+# 8000 — coordinator FastAPI
+# 6379 — Ray GCS (head node)
+# 8265 — Ray dashboard
+# 10001 — Ray client server
+EXPOSE 8000 6379 8265 10001
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \

@@ -54,6 +54,24 @@ class Settings(BaseSettings):
     # Database URL for user storage
     database_url: str = "sqlite:////app/data/users.db"
 
+    # ---------------------------------------------------------------------------
+    # Ray distributed framework settings
+    # ---------------------------------------------------------------------------
+    # Set use_ray=true to replace the HTTP-based GatewayService with Ray actors.
+    # When false (default), the original HTTP + Docker worker setup is used.
+    use_ray: bool = False
+
+    # Ray cluster address for ray.init().
+    #   "auto"  — connect to an existing Ray cluster (standard for production)
+    #   "local" — start a local single-machine Ray instance (useful for testing)
+    ray_address: str = "auto"
+
+    # Path to experts_registry.json passed to each worker actor so it can build
+    # its TaskExpert instances.
+    expert_registry_path: str = str(
+        _PROJECT_ROOT / "moe_router" / "experts" / "config" / "experts_registry.json"
+    )
+
 
 # Global settings instance
 settings = Settings()

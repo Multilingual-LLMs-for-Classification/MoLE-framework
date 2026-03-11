@@ -31,6 +31,18 @@ async def lifespan(app: FastAPI):
     print(f"Starting MoLE Classification Service  [mode={mode}]")
     print("=" * 60)
 
+    # Connect to Ray cluster before initializing the routing service so that
+    # spawn_workers (called inside routing_service.initialize) can reach the cluster.
+    if settings.use_ray:
+        import ray
+        print(f"[Ray] Connecting to Ray cluster at address='{settings.ray_address}' ...")
+        ray.init(
+            address=settings.ray_address,
+            ignore_reinit_error=True,   # safe to call multiple times (e.g. hot-reload)
+            logging_level="WARNING",    # suppress Ray's verbose INFO logs
+        )
+        print(f"[Ray] Connected — cluster resources: {ray.cluster_resources()}")
+
     # Initialize routing system in background thread
     # (model loading is CPU/IO bound and can block the event loop)
     loop = asyncio.get_event_loop()
@@ -55,6 +67,9 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     print(f"Shutting down MoLE Classification Service [mode={mode}] ...")
+    if settings.use_ray:
+        import ray
+        ray.shutdown()
 
 
 # Create FastAPI application
