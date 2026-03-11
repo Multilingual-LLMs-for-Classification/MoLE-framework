@@ -14,9 +14,12 @@ Classify text across multiple domains and tasks — sentiment rating, PII detect
 - [Quick Start](#quick-start)
 - [API Reference](#api-reference)
   - [MOEClassifier](#moeclassifier)
+  - [PipelineConfig](#pipelineconfig)
+  - [MOETrainer](#moetrainer)
   - [ClassificationResult](#classificationresult)
   - [BatchResult](#batchresult)
   - [BatchItem](#batchitem)
+- [Component Customization](#component-customization)
 - [The `description` Parameter](#the-description-parameter)
 - [Batch Classification](#batch-classification)
 - [Error Handling](#error-handling)
@@ -155,13 +158,25 @@ Main entry point for the SDK. The underlying models are large, so initialization
 
 ---
 
-#### `MOEClassifier()`
+#### `MOEClassifier(deployment="local", *, pipeline_config=None, ...)`
 
 ```python
-clf = MOEClassifier()
+clf = MOEClassifier()                          # all defaults
+clf = MOEClassifier(pipeline_config=config)     # with custom components
 ```
 
-Creates the classifier object. No models are loaded at this point.
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `deployment` | `str` or `DeploymentMode` | `"local"` | Deployment mode: `"local"`, `"remote"`, or `"distributed"`. |
+| `pipeline_config` | `PipelineConfig` | `None` | Optional component overrides — custom model paths, encoder names, or expert registries. See [PipelineConfig](#pipelineconfig). |
+| `coordinator_url` | `str` | `None` | URL for remote mode. |
+| `credentials` | `dict` | `None` | `{"username": ..., "password": ...}` for remote mode. |
+| `token` | `str` | `None` | Pre-existing JWT token for remote mode. |
+| `expert_mapping` | `str` | `None` | Path to `expert_machine_mapping.json` for distributed mode. |
+
+No models are loaded at construction time — call `initialize()` to load them.
 
 ---
 
@@ -283,6 +298,116 @@ stats = clf.get_stats()
 
 **Raises:**
 - `RuntimeError` — if `initialize()` has not been called.
+
+---
+
+### PipelineConfig
+
+```python
+from moe_classifier import PipelineConfig
+```
+
+A dataclass that bundles override paths for individual pipeline components. All fields default to `None`, meaning the framework's built-in defaults are used. Set only the fields you want to override.
+
+```python
+@dataclass
+class PipelineConfig
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `language_model` | `str \| None` | `None` | Path to a custom FastText language-identification model (`.bin`). |
+| `expert_registry` | `str \| None` | `None` | Path to a custom `experts_registry.json` defining domains, tasks, adapters, and supported languages. |
+| `domain_model_dir` | `str \| None` | `None` | Directory containing a trained domain classifier checkpoint (`domain_head.pt`, `domain2id.json`, `prototypes.pt`). |
+| `domain_model_name` | `str` | `"xlm-roberta-base"` | HuggingFace encoder name for the domain classifier. |
+| `task_router_dir` | `str \| None` | `None` | Directory containing trained Q-learning task router checkpoints (per-domain `.pt` files and `task2id_*.json`). |
+| `task_encoder_name` | `str` | `"xlm-roberta-base"` | HuggingFace encoder name for the task router. |
+
+```python
+config = PipelineConfig(
+    domain_model_dir="models/my_domain_classifier/",
+    expert_registry="config/my_experts_registry.json",
+)
+clf = MOEClassifier(pipeline_config=config)
+clf.initialize()
+```
+
+---
+
+### MOETrainer
+
+```python
+from moe_classifier import MOETrainer
+```
+
+Train MoLE pipeline components (domain classifier, task routers) on your own labeled data. Creates a `PromptRoutingSystem` in training mode internally and delegates to its built-in training methods.
+
+```python
+class MOETrainer
+```
+
+---
+
+#### `MOETrainer(pipeline_config=None)`
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `pipeline_config` | `PipelineConfig` | `None` | Override component paths (custom registry, encoder name, etc.). If `None`, uses all framework defaults. |
+
+---
+
+#### `trainer.train_domain_classifier(training_data, *, epochs=3, lr=2e-5, batch_size=32, val_split=0.1, freeze_encoder=True, output_dir=None) -> dict`
+
+Train the XLM-RoBERTa domain classifier on labeled prompts.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `training_data` | `list[dict]` | *(required)* | Each dict must have `"prompt"` and `"domain"` keys. |
+| `epochs` | `int` | `3` | Number of training epochs. |
+| `lr` | `float` | `2e-5` | Learning rate. |
+| `batch_size` | `int` | `32` | Batch size. |
+| `val_split` | `float` | `0.1` | Fraction of data for validation. |
+| `freeze_encoder` | `bool` | `True` | If `True`, freeze the XLM-R encoder and only train the classification head (faster). |
+| `output_dir` | `str` | `None` | Directory to save the trained model. If `None`, saves to the default framework directory. |
+
+**Returns:** `dict` — training summary with loss and accuracy information.
+
+```python
+result = trainer.train_domain_classifier(
+    training_data=[
+        {"prompt": "Revenue missed expectations.", "domain": "finance"},
+        {"prompt": "Patient showed improvement.", "domain": "health"},
+    ],
+    epochs=5,
+    output_dir="models/my_domain_classifier/",
+)
+```
+
+---
+
+#### `trainer.train_task_routers(training_data, *, val_split=0.1, output_dir=None) -> None`
+
+Train Q-learning task routers on labeled prompts.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `training_data` | `list[dict]` | *(required)* | Each dict must have `"prompt"`, `"domain"`, and `"task"` keys. |
+| `val_split` | `float` | `0.1` | Fraction of data for validation. |
+| `output_dir` | `str` | `None` | Directory to save trained routers. If `None`, saves to the default framework directory. |
+
+```python
+trainer.train_task_routers(
+    training_data=[
+        {"prompt": "Rate this product.", "domain": "finance", "task": "rating"},
+        {"prompt": "Classify this article.", "domain": "finance", "task": "news"},
+    ],
+    output_dir="models/my_task_routers/",
+)
+```
 
 ---
 
@@ -547,6 +672,81 @@ result = clf.classify(
     return_raw_response=True,
 )
 ```
+
+---
+
+## Component Customization
+
+MoLE lets you override any pipeline component — swap models, provide custom checkpoints, or train the default architecture on your own data — without modifying framework code.
+
+### Using custom models
+
+Use `PipelineConfig` to point the pipeline at your own model files:
+
+```python
+from moe_classifier import MOEClassifier, PipelineConfig
+
+# Override just what you need — everything else uses defaults
+config = PipelineConfig(
+    domain_model_dir="models/my_legal_domain_classifier/",
+    expert_registry="config/my_experts_registry.json",
+)
+
+clf = MOEClassifier(pipeline_config=config)
+clf.initialize()
+result = clf.classify(text="Motion to suppress evidence denied.")
+```
+
+### Training on your own data
+
+Use `MOETrainer` to train the domain classifier or task routers on your labeled data, then use the checkpoints with `PipelineConfig`:
+
+```python
+from moe_classifier import MOETrainer, PipelineConfig, MOEClassifier
+
+# Step 1: Train domain classifier
+trainer = MOETrainer()
+trainer.train_domain_classifier(
+    training_data=[
+        {"prompt": "The defendant filed a motion to dismiss.", "domain": "legal"},
+        {"prompt": "Q3 revenue exceeded expectations.", "domain": "finance"},
+        {"prompt": "Patient showed improvement after treatment.", "domain": "health"},
+        # ... more labeled examples
+    ],
+    epochs=5,
+    output_dir="models/my_domain_classifier/",
+)
+
+# Step 2: Train task routers
+trainer.train_task_routers(
+    training_data=[
+        {"prompt": "Rate this product 1-5.", "domain": "finance", "task": "rating"},
+        {"prompt": "Classify this article.", "domain": "finance", "task": "news"},
+        # ... more labeled examples
+    ],
+    output_dir="models/my_task_routers/",
+)
+
+# Step 3: Use your trained models
+config = PipelineConfig(
+    domain_model_dir="models/my_domain_classifier/",
+    task_router_dir="models/my_task_routers/",
+)
+clf = MOEClassifier(pipeline_config=config)
+clf.initialize()
+result = clf.classify(text="Motion to suppress evidence denied.")
+```
+
+### What you can override
+
+| Component | PipelineConfig field | What to provide |
+|---|---|---|
+| Language detector | `language_model` | Path to a FastText `.bin` model |
+| Expert registry | `expert_registry` | Path to a custom `experts_registry.json` |
+| Domain classifier | `domain_model_dir` | Directory with `domain_head.pt`, `domain2id.json`, `prototypes.pt` |
+| Domain encoder | `domain_model_name` | Any HuggingFace encoder (default: `xlm-roberta-base`) |
+| Task routers | `task_router_dir` | Directory with per-domain `.pt` files and `task2id_*.json` |
+| Task encoder | `task_encoder_name` | Any HuggingFace encoder (default: `xlm-roberta-base`) |
 
 ---
 

@@ -21,8 +21,11 @@ class LanguageDetector:
     for 50+ common languages using character patterns and keywords.
     """
 
-    def __init__(self, registry_path: str | Path = None):
-        self.model_path = Path(__file__).parents[3] / "models" / "lid.176.bin"
+    def __init__(self, registry_path: str | Path = None, model_path: str | Path = None):
+        if model_path:
+            self.model_path = Path(model_path)
+        else:
+            self.model_path = Path(__file__).parents[3] / "models" / "lid.176.bin"
         self.model = None
         self._load_fasttext_model()
 

@@ -132,6 +132,80 @@ def demo_distributed():
     print(f"  Time   : {result.processing_time_ms:.1f} ms\n")
 
 
+def demo_custom_config():
+    """
+    CUSTOM CONFIG — override pipeline components with your own models.
+
+    Use PipelineConfig to swap individual components (language detector,
+    domain classifier, task router) without modifying framework code.
+    """
+    print("\n" + "=" * 60)
+    print("MODE 4: CUSTOM CONFIG  (override pipeline components)")
+    print("=" * 60)
+
+    from moe_classifier import PipelineConfig
+
+    # Override just what you need — everything else uses defaults
+    config = PipelineConfig(
+        domain_model_dir="models/my_legal_domain_classifier/",
+        expert_registry="config/my_experts_registry.json",
+    )
+
+    clf = MOEClassifier(pipeline_config=config)
+    clf.initialize()
+    print(f"Classifier ready: {clf}\n")
+
+    result = clf.classify(
+        text="Motion to suppress evidence denied by the court.",
+        description="Classify this legal document.",
+    )
+    print(f"  Result : {result.result}")
+    print(f"  Route  : {result.routing_path}")
+    print(f"  Time   : {result.processing_time_ms:.1f} ms\n")
+
+
+def demo_training():
+    """
+    TRAINING — train pipeline components on your own data.
+
+    Use MOETrainer to train the domain classifier or task routers
+    on labeled data, then save to a custom directory for later use
+    with PipelineConfig.
+    """
+    print("\n" + "=" * 60)
+    print("MODE 5: TRAINING  (train on your own data)")
+    print("=" * 60)
+
+    from moe_classifier import MOETrainer
+
+    trainer = MOETrainer()
+
+    # Step 1: Train domain classifier
+    training_data = [
+        {"prompt": "The defendant filed a motion to dismiss.", "domain": "legal"},
+        {"prompt": "Revenue increased by 20% year over year.", "domain": "finance"},
+        {"prompt": "Patient showed improvement after treatment.", "domain": "health"},
+        # ... add more labeled examples
+    ]
+    trainer.train_domain_classifier(
+        training_data,
+        epochs=5,
+        output_dir="models/my_domain_classifier/",
+    )
+
+    # Step 2: Train task routers
+    task_data = [
+        {"prompt": "Rate this review 1-5.", "domain": "finance", "task": "rating"},
+        {"prompt": "Classify this article.", "domain": "finance", "task": "news"},
+        # ... add more labeled examples
+    ]
+    trainer.train_task_routers(
+        task_data,
+        output_dir="models/my_task_routers/",
+    )
+    print("Training complete!\n")
+
+
 def main():
     print("MOE Classifier SDK — Deployment Mode Examples\n")
     print(f"Available modes: {[m.value for m in DeploymentMode]}\n")
@@ -146,6 +220,12 @@ def main():
 
     # --- Mode 3: Distributed (requires GPU for gating + running workers) ---
     # demo_distributed()
+
+    # --- Mode 4: Custom config (use your own models) ---
+    # demo_custom_config()
+
+    # --- Mode 5: Training (train on your own data) ---
+    # demo_training()
 
     print("\nDone.")
 

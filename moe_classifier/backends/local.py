@@ -20,7 +20,8 @@ class LocalBackend(ClassifierBackend):
     ``route_prompt()`` for each classification request.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, pipeline_config=None) -> None:
+        self._config = pipeline_config
         self._system = None
         self._initialized = False
 
@@ -34,10 +35,27 @@ class LocalBackend(ClassifierBackend):
                 "installed (pip install -e .)."
             ) from exc
 
+        # Build keyword overrides from PipelineConfig (if supplied)
+        kwargs = {}
+        if self._config:
+            if self._config.language_model:
+                kwargs["language_model"] = self._config.language_model
+            if self._config.expert_registry:
+                kwargs["expert_registry_override"] = self._config.expert_registry
+            if self._config.domain_model_dir:
+                kwargs["domain_model_dir"] = self._config.domain_model_dir
+            if self._config.domain_model_name != "xlm-roberta-base":
+                kwargs["domain_model_name"] = self._config.domain_model_name
+            if self._config.task_router_dir:
+                kwargs["task_router_dir"] = self._config.task_router_dir
+            if self._config.task_encoder_name != "xlm-roberta-base":
+                kwargs["task_encoder_name"] = self._config.task_encoder_name
+
         try:
             self._system = PromptRoutingSystem(
                 training_mode=False,
                 coordinator_only=False,
+                **kwargs,
             )
             self._initialized = True
         except Exception as exc:

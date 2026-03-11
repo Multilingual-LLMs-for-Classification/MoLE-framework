@@ -38,6 +38,8 @@ Supports three deployment modes:
 """
 
 from .classifier import MOEClassifier
+from .pipeline_config import PipelineConfig
+from .trainer import MOETrainer
 from .types import (
     BatchItem,
     BatchResult,
@@ -45,10 +47,12 @@ from .types import (
     DeploymentMode,
 )
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 __all__ = [
     "MOEClassifier",
+    "MOETrainer",
+    "PipelineConfig",
     "ClassificationResult",
     "BatchResult",
     "BatchItem",
