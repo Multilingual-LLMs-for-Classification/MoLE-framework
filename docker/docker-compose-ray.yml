@@ -82,9 +82,11 @@ services:
 
       # --- Ray settings ---
       - USE_RAY=true
-      # "auto" connects to the Ray cluster started by the ray-head service.
-      # Uses host networking so coordinator reaches ray-head at localhost:6379.
-      - RAY_ADDRESS=auto
+      # Use Ray Client protocol (ray://) — connects over TCP on port 10001.
+      # This is required when coordinator and ray-head are separate containers:
+      #   - localhost:6379  → GCS address, requires shared /tmp/ray Unix socket (fails)
+      #   - ray://localhost:10001 → Ray Client, pure TCP, no shared filesystem needed
+      - RAY_ADDRESS=ray://localhost:10001
 
       # API
       - API_HOST=0.0.0.0
@@ -95,6 +97,9 @@ services:
       - JWT_SECRET_KEY=your-super-secret-key-change-in-production
       - JWT_ALGORITHM=HS256
       - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+      # Suppress autoscaler "No available node types" scheduler event messages
+      - RAY_SCHEDULER_EVENTS=0
 
       # Coordinator runs on CPU — GPU reserved for worker actors
       - CUDA_VISIBLE_DEVICES=""
@@ -122,6 +127,8 @@ services:
     depends_on:
       ray-head:
         condition: service_healthy
+      ray-worker-local:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
@@ -131,18 +138,49 @@ services:
       retries: 3
 
   # --------------------------------------------------------------------------
-  # Notes on worker actors
-  # --------------------------------------------------------------------------
-  # Expert worker actors (llama-2-7b-hf, etc.) are NOT separate Docker
-  # services in this file.  They are Ray Actors, spawned automatically by
-  # the coordinator at startup via ray_cluster/spawn_workers.py.
+  # LOCAL GPU WORKER NODE
+  # Registers this machine's GPU(s) with the Ray cluster so that
+  # ExpertWorkerActors spawned by the coordinator have a GPU slot to land on.
   #
-  # For each entry in config/expert_machine_mapping.json, spawn_workers.py:
-  #   1. Calls ExpertWorkerActor.options(name=..., num_gpus=1).remote(model_key)
-  #   2. Ray schedules the actor on whichever cluster node has a free GPU
-  #   3. The actor loads the LLM once and keeps it in GPU memory
+  # Why this service exists here (not only in docker-compose-ray-worker.yml):
+  #   csetuf07 is BOTH the coordinator machine AND a GPU machine.
+  #   The coordinator process itself runs CPU-only (ray-head --num-gpus=0).
+  #   This worker node joins the cluster and advertises the local GPU so that
+  #   Ray can schedule ExpertWorkerActor(num_gpus=1) on it.
   #
-  # To add a GPU worker node (on a separate machine):
-  #   RAY_HEAD_ADDRESS=<this-machine-ip>:6379 \
-  #   docker-compose -f docker/docker-compose-ray-worker.yml up
+  # For additional remote GPU machines, run docker-compose-ray-worker.yml on
+  # those machines pointing RAY_HEAD_ADDRESS at this machine's IP:6379.
   # --------------------------------------------------------------------------
+  ray-worker-local:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: mole-ray-worker-local
+    command: >
+      ray start
+        --address=localhost:6379
+        --num-cpus=4
+        --num-gpus=1
+        --block
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HOME=/root/.cache/huggingface
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - EXPERT_REGISTRY_PATH=/app/moe_router/experts/config/experts_registry.json
+    volumes:
+      - /home/cse/.cache/huggingface:/root/.cache/huggingface
+      - ./volumes/adapter_weights:/app/moe_router/experts/llms/adapters:ro
+      - ../config:/app/config:ro
+    network_mode: host
+    runtime: nvidia
+    depends_on:
+      ray-head:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ray", "status", "--address", "localhost:6379"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 5
