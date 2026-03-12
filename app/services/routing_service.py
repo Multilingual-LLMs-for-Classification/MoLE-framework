@@ -39,6 +39,7 @@ class RoutingService:
     def __init__(self):
         self._routing_system = None
         self._gateway = None
+        self._gating_actor = None   # Ray GatingActor handle (None in non-Ray modes)
         self._initialized = False
         # Semaphore is only used in monolithic mode (GPU concurrency control)
         self._gpu_semaphore = Semaphore(settings.max_concurrent_gpu_requests)
@@ -74,12 +75,27 @@ class RoutingService:
                     # no Docker worker containers, no Redis queue.
                     from ray_cluster.spawn_workers import spawn_workers
                     from ray_cluster.ray_gateway_service import RayGatewayService
-                    model_to_actor = spawn_workers(
-                        settings.expert_mapping_path,
-                        settings.expert_registry_path,
+
+                    # Spawn expert worker actors from the Ray-native registry.
+                    # Returns Dict[str, List[str]]: model_key → [actor_name, ...]
+                    model_to_actors = spawn_workers(
+                        ray_registry_path=settings.ray_worker_registry_path,
+                        expert_registry_path=settings.expert_registry_path,
                     )
-                    self._gateway = RayGatewayService(model_to_actor)
+                    self._gateway = RayGatewayService(model_to_actors)
                     print("Ray gateway service initialized.")
+
+                    # Optionally move the gating pipeline to a Ray Actor so it
+                    # runs off the coordinator's CPU (and optionally on a GPU slice).
+                    if settings.use_gating_actor:
+                        from ray_cluster.gating_actor import spawn_gating_actor
+                        self._gating_actor = spawn_gating_actor(
+                            num_gpus=settings.gating_actor_num_gpus
+                        )
+                        print(
+                            f"Gating actor initialized "
+                            f"(num_gpus={settings.gating_actor_num_gpus})."
+                        )
                 else:
                     # Legacy mode: workers are separate FastAPI Docker containers.
                     from app.services.gateway_service import GatewayService
@@ -148,12 +164,29 @@ class RoutingService:
         start_time = time.perf_counter()
         loop = asyncio.get_event_loop()
 
-        # Phase 1: lightweight gating (CPU/small-GPU; runs concurrently)
+        # Phase 1: lightweight gating (language → domain → task → model resolution)
+        #
+        # Two paths depending on whether a Ray GatingActor is configured:
+        #   a) GatingActor (USE_GATING_ACTOR=true): await the remote actor call
+        #      directly — gating runs on its own Ray process (CPU or fractional GPU).
+        #   b) Thread pool (default): run synchronous PromptRoutingSystem.run_gating
+        #      in an executor so the FastAPI event loop is not blocked.
         prompt = f"{request.description}\n\n{request.text}"
-        gating = await asyncio.wait_for(
-            loop.run_in_executor(None, self._routing_system.run_gating, prompt),
-            timeout=timeout
-        )
+
+        if self._gating_actor is not None:
+            # GatingActor.run_gating is async → ObjectRef is directly awaitable.
+            gating_dict = await asyncio.wait_for(
+                self._gating_actor.run_gating.remote(prompt),
+                timeout=timeout,
+            )
+            # Reconstruct GatingResult from the plain dict returned by the actor.
+            from moe_router.gating.components.routing_system import GatingResult
+            gating = GatingResult(**gating_dict)
+        else:
+            gating = await asyncio.wait_for(
+                loop.run_in_executor(None, self._routing_system.run_gating, prompt),
+                timeout=timeout,
+            )
 
         # Phase 2: async HTTP dispatch to expert worker
         payload = {
