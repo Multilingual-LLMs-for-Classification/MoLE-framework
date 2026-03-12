@@ -279,5 +279,184 @@ All ML core logic is intact and untouched:
 - `app/schemas/` — request/response models
 - `app/middleware/` — error handling
 - `config/experts_registry.json` — model/adapter registry
-- `config/expert_machine_mapping.json` — still used by `spawn_workers.py` to know
-  which models to spawn (host/port entries are ignored in Ray mode)
+- `config/expert_machine_mapping.json` — still used by `GatewayService` for HTTP mode
+
+---
+
+## Streamlining Improvements (Phase 2)
+
+The following improvements were made after the initial Ray migration to further
+streamline the integration.
+
+### 1. `await result_ref` instead of `asyncio.to_thread`
+
+**File:** `ray_cluster/ray_gateway_service.py`
+
+`ExpertWorkerActor.classify()` is now an `async` method. Ray exposes async actor
+methods as directly awaitable `ObjectRef`s. The coordinator no longer needs a
+thread-pool hop:
+
+```python
+# Before
+return await asyncio.to_thread(ray.get, result_ref)
+
+# After
+return await result_ref   # ObjectRef from async actor method
+```
+
+This removes the overhead of scheduling a thread, simplifies the code, and makes
+the async chain from FastAPI → gateway → actor fully non-blocking.
+
+---
+
+### 2. Ray metrics (Counter + Histogram)
+
+**File:** `ray_cluster/worker_actor.py`
+
+Each `ExpertWorkerActor` now publishes two metrics using `ray.util.metrics`:
+
+| Metric | Type | Tags |
+|---|---|---|
+| `mole_expert_requests_total` | Counter | `worker_id`, `model_key`, `status` (ok/error) |
+| `mole_expert_latency_ms` | Histogram | `worker_id`, `model_key` |
+
+These appear automatically in the Ray dashboard under the **Metrics** tab and are
+scraped by any attached Prometheus instance. No additional infrastructure needed.
+
+---
+
+### 3. Explicit `max_concurrency=1`
+
+**File:** `ray_cluster/worker_actor.py`
+
+```python
+@ray.remote(num_gpus=1, max_concurrency=1)
+class ExpertWorkerActor:
+```
+
+`max_concurrency=1` was always the effective default, but is now explicit.
+It makes the GPU serialization guarantee visible in the code without needing
+a comment to explain it, and makes it easy to increase for batching scenarios.
+
+---
+
+### 4. Separate Ray config (`ray_worker_registry.json`)
+
+**Files:** `config/ray_worker_registry.json` (new), `ray_cluster/spawn_workers.py`,
+`app/config.py`
+
+`expert_machine_mapping.json` had `url` and `machine` fields that are meaningless
+in Ray mode. A dedicated file `config/ray_worker_registry.json` is now used when
+`USE_RAY=true`:
+
+```json
+{
+  "workers": {
+    "worker-0": {
+      "base_model_key": "llama-2-7b-hf",
+      "num_replicas": 1,
+      "num_gpus": 1
+    }
+  }
+}
+```
+
+`expert_machine_mapping.json` is unchanged and still used by `GatewayService` for
+HTTP mode. The two configs cannot be confused — neither file has the other's fields.
+
+New env var: `RAY_WORKER_REGISTRY_PATH` (default: `config/ray_worker_registry.json`).
+
+---
+
+### 5. Round-robin replica pool
+
+**Files:** `ray_cluster/ray_worker_registry.json`, `ray_cluster/spawn_workers.py`,
+`ray_cluster/ray_gateway_service.py`
+
+Each worker entry now supports a `num_replicas` field. Setting it to `> 1` spawns
+multiple actor instances for the same model, each on its own GPU. `RayGatewayService`
+distributes requests across replicas using a per-model round-robin counter.
+
+Example — deploy two replicas of the most-used model:
+```json
+"worker-0": {
+  "base_model_key": "llama-2-7b-hf",
+  "num_replicas": 2,
+  "num_gpus": 1
+}
+```
+This creates `expert-worker-worker-0-r0` and `expert-worker-worker-0-r1`.
+Consecutive requests for `llama-2-7b-hf` alternate between the two actors.
+
+`spawn_workers` now returns `Dict[str, List[str]]` instead of `Dict[str, str]`.
+
+---
+
+### 6. Placement groups
+
+**File:** `ray_cluster/spawn_workers.py`
+
+An optional `placement_group_strategy` field in `ray_worker_registry.json` pins
+an actor (or its replicas) to a specific node:
+
+```json
+"worker-0": {
+  "base_model_key": "llama-2-7b-hf",
+  "num_replicas": 1,
+  "num_gpus": 1,
+  "placement_group_strategy": "STRICT_PACK"
+}
+```
+
+Supported strategies: `STRICT_PACK`, `PACK`, `SPREAD`, `STRICT_SPREAD`.
+Omit the field to let Ray schedule freely (default, recommended for most setups).
+
+---
+
+### 7. GatingActor — fractional GPU for the gating pipeline
+
+**Files:** `ray_cluster/gating_actor.py` (new), `app/services/routing_service.py`,
+`app/config.py`
+
+By default the gating pipeline runs in the coordinator's process on CPU. When
+`USE_GATING_ACTOR=true`, the pipeline is moved to a named Ray Actor:
+
+```
+@ray.remote
+class GatingActor:
+    async def run_gating(self, prompt: str) -> dict
+```
+
+Spawned with `.options(num_gpus=GATING_ACTOR_NUM_GPUS)`:
+
+| `GATING_ACTOR_NUM_GPUS` | Effect |
+|---|---|
+| `0.0` (default) | CPU only — safe on any machine |
+| `0.1` | 10% of a GPU — XLM-RoBERTa runs on GPU; 10 gating actors share one GPU |
+
+The coordinator's `_classify_coordinator()` path now branches:
+
+```python
+if self._gating_actor is not None:
+    gating_dict = await self._gating_actor.run_gating.remote(prompt)
+    gating = GatingResult(**gating_dict)
+else:
+    gating = await loop.run_in_executor(None, self._routing_system.run_gating, prompt)
+```
+
+New env vars:
+- `USE_GATING_ACTOR=true` — enable the gating actor (requires `USE_RAY=true`)
+- `GATING_ACTOR_NUM_GPUS=0.1` — fractional GPU for the gating actor
+
+---
+
+## Environment Variables Reference (Ray mode)
+
+| Variable | Default | Description |
+|---|---|---|
+| `USE_RAY` | `false` | Enable Ray mode |
+| `RAY_ADDRESS` | `auto` | Ray cluster address for `ray.init()` |
+| `RAY_WORKER_REGISTRY_PATH` | `config/ray_worker_registry.json` | Ray-native worker config |
+| `EXPERT_REGISTRY_PATH` | _(in-repo default)_ | Path to `experts_registry.json` |
+| `USE_GATING_ACTOR` | `false` | Move gating pipeline to a Ray Actor |
+| `GATING_ACTOR_NUM_GPUS` | `0.0` | GPU fraction for gating actor (0 = CPU) |
