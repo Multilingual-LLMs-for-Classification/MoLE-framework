@@ -11,14 +11,34 @@ Ray handles:
   - Resource tracking (num_gpus=1 reserves one full GPU per actor)
 
 The ML logic (SingleModelPool, TaskExpert, LoRA adapters) is unchanged.
+
+Improvements over the first version
+-------------------------------------
+  max_concurrency=1  — explicit declaration (Ray default, but now visible in code).
+                       Guarantees GPU inference calls are serialized within one actor.
+                       Increase to >1 only if you want Ray to queue multiple calls.
+
+  Ray metrics        — Counter and Histogram instances expose per-actor stats to the
+                       Ray dashboard and any attached Prometheus scraper without any
+                       extra infrastructure.  Metrics are tagged by worker_id and
+                       model_key so dashboards can filter per model.
+
+  Async classify     — classify() is now an async method.  Ray runs async actor methods
+                       on the actor's own asyncio event loop, so the coordinator can
+                       ``await actor.classify.remote(...)`` directly (no thread-pool
+                       hop via asyncio.to_thread).  The synchronous GPU inference is
+                       dispatched to an executor inside the method so the event loop
+                       is not blocked between requests.
 """
 
+import asyncio
 import json
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 import ray
+from ray.util.metrics import Counter, Histogram
 
 
 # ---------------------------------------------------------------------------
@@ -74,24 +94,24 @@ def _build_experts(pool, registry_path: Path) -> Dict:
 # Ray Actor
 # ---------------------------------------------------------------------------
 
-@ray.remote(num_gpus=1)
+@ray.remote(num_gpus=1, max_concurrency=1)
 class ExpertWorkerActor:
     """
     Ray Actor that permanently holds one LLM in GPU memory.
 
-    Lifecycle
-    ---------
-    1. __init__: loads the base LLM via SingleModelPool.preload()
-    2. classify(): called by the coordinator; runs inference synchronously
-       (Ray executes each actor method call in the actor's thread; no need for
-       asyncio inside the actor — the caller side awaits the ObjectRef).
-    3. On crash: Ray automatically restarts the actor (model reloads on init).
-
     Resource declaration
     --------------------
-    ``@ray.remote(num_gpus=1)`` tells the Ray scheduler that this actor
-    requires one full GPU.  Ray places it on a node that has a free GPU and
-    sets CUDA_VISIBLE_DEVICES automatically — no manual GPU assignment needed.
+    ``num_gpus=1``       — Ray scheduler places this actor on a node with a free GPU
+                           and sets CUDA_VISIBLE_DEVICES automatically.
+    ``max_concurrency=1``— Only one classify() call runs at a time inside this actor.
+                           This is the Ray equivalent of the old GPU semaphore in
+                           expert_worker/router.py.  Raise this value if you switch
+                           to a batching strategy.
+
+    Metrics (visible in Ray dashboard + Prometheus)
+    -----------------------------------------------
+    mole_expert_requests_total      Counter   {worker_id, model_key, status}
+    mole_expert_latency_ms          Histogram {worker_id, model_key}
     """
 
     def __init__(
@@ -105,6 +125,22 @@ class ExpertWorkerActor:
         self.worker_id = worker_id
         self.model_key = model_key
         registry = _resolve_registry_path(registry_path)
+
+        # ------------------------------------------------------------------
+        # Ray metrics — declared in __init__ so they are scoped to this actor
+        # process.  Tags are applied at record time (not at declaration time).
+        # ------------------------------------------------------------------
+        self._request_counter = Counter(
+            "mole_expert_requests_total",
+            description="Total inference requests handled by this worker actor",
+            tag_keys=("worker_id", "model_key", "status"),
+        )
+        self._latency_histogram = Histogram(
+            "mole_expert_latency_ms",
+            description="End-to-end inference latency in milliseconds",
+            boundaries=[50, 100, 200, 500, 1000, 2000, 5000, 10000],
+            tag_keys=("worker_id", "model_key"),
+        )
 
         print(f"[ExpertWorkerActor:{worker_id}] Loading model '{model_key}' ...")
         self.pool = SingleModelPool(model_key=model_key, registry_path=registry)
@@ -121,24 +157,54 @@ class ExpertWorkerActor:
     # Inference
     # ------------------------------------------------------------------
 
-    def classify(
+    async def classify(
         self,
         task_key: str,
         language: str,
         text: str,
         description: str,
-        adapter_name: str,
+        adapter_name: str,  # resolved by coordinator; kept for API symmetry with HTTP worker
         request_id: str,
     ) -> Dict[str, Any]:
         """
         Run LLM inference for the given task + language.
 
-        Called by the coordinator via ``actor.classify.remote(...)``.
+        Called by the coordinator via ``await actor.classify.remote(...)``.
         Ray serializes arguments and return value across nodes automatically.
-        The GPU semaphore from the old FastAPI worker is no longer needed —
-        Ray serializes calls to the same actor automatically (each actor runs
-        in a single thread by default).
+
+        The method is async so the coordinator can await the ObjectRef directly
+        without a thread-pool hop.  The blocking GPU call is dispatched to a
+        thread executor so the actor's event loop stays responsive (e.g. for
+        is_ready() health checks arriving while inference runs).
+
+        Ray enforces max_concurrency=1 so no external GPU semaphore is needed.
         """
+        tags = {"worker_id": self.worker_id, "model_key": self.model_key}
+        start = time.perf_counter()
+
+        _ = adapter_name  # resolved upstream; not needed by the actor
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, self._sync_classify, task_key, language, text, description, request_id
+            )
+        except Exception:
+            self._request_counter.inc(tags={**tags, "status": "error"})
+            raise
+
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        self._latency_histogram.observe(elapsed_ms, tags=tags)
+        self._request_counter.inc(tags={**tags, "status": "ok"})
+        return result
+
+    def _sync_classify(
+        self,
+        task_key: str,
+        language: str,
+        text: str,
+        description: str,
+        request_id: str,
+    ) -> Dict[str, Any]:
+        """Synchronous GPU inference dispatched from classify() via run_in_executor."""
         if not self.pool.is_ready():
             raise RuntimeError(f"Worker {self.worker_id}: model not ready")
 
