@@ -13,7 +13,7 @@
       "base_model_key": "qwen2.5-7b-instruct",
       "gpu_device": "0",
       "machine": "machine-1",
-      "note": "Handles Spanish / Japanese sentiment rating (finance/rating)"
+      "note": "10.8.100.28 — Handles Spanish / Japanese sentiment & ESCI (Qwen2.5)"
     },
     "worker-2": {
       "url": "http://expert-worker-2:8003",
