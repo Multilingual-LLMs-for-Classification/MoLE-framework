@@ -1,0 +1,53 @@
+{
+  "_comment": "Ray-mode worker registry. Used by spawn_workers.py when USE_RAY=true. HTTP-mode workers (GatewayService) still use expert_machine_mapping.json — this file has no url/port fields so the two configs cannot be confused.",
+  "_schema": {
+    "workers.<id>.base_model_key": "Must match a key in experts_registry.json base_models section",
+    "workers.<id>.num_replicas":   "How many Ray Actor replicas to spawn for this model. >1 enables round-robin load balancing across replicas (each replica holds the full model on its own GPU).",
+    "workers.<id>.num_gpus":       "GPU slots required per actor. 1 = one full GPU (standard). Fractional values allowed if multiple models share a GPU.",
+    "workers.<id>.placement_group_strategy": "Optional Ray placement group strategy: STRICT_PACK | PACK | SPREAD | STRICT_SPREAD. Omit to let Ray schedule freely."
+  },
+  "workers": {
+    "worker-0": {
+      "base_model_key": "llama-2-7b-hf",
+      "num_replicas": 1,
+      "num_gpus": 1,
+      "note": "Primary English finance worker (Llama-2-7B). Increase num_replicas if this model becomes a bottleneck."
+    },
+    "worker-1": {
+      "base_model_key": "qwen2.5-7b-instruct",
+      "num_replicas": 1,
+      "num_gpus": 1,
+      "note": "Spanish / Japanese sentiment rating (Qwen2.5-7B)"
+    },
+    "worker-2": {
+      "base_model_key": "bloomz-7b1",
+      "num_replicas": 1,
+      "num_gpus": 1,
+      "note": "Chinese sentiment (BLOOMZ-7B)"
+    },
+    "worker-3": {
+      "base_model_key": "mistral-7B-Instruct-v0.3",
+      "num_replicas": 1,
+      "num_gpus": 1,
+      "note": "PII detection (NL/EN/FR/DE/IT/ES/SV) + Spanish ESCI (Mistral-7B)"
+    },
+    "worker-4": {
+      "base_model_key": "unsloth/mistral-7b-instruct-v0.3-bnb-4bit",
+      "num_replicas": 1,
+      "num_gpus": 1,
+      "note": "4-bit quantised Mistral (machine-4, GPU 0)"
+    },
+    "worker-5": {
+      "base_model_key": "facebook/xglm-7.5B",
+      "num_replicas": 1,
+      "num_gpus": 1,
+      "note": "Turkish news classification (XGLM-7.5B)"
+    },
+    "worker-6": {
+      "base_model_key": "llama-3.1-8b-instruct",
+      "num_replicas": 1,
+      "num_gpus": 1,
+      "note": "English / Japanese ESCI relevance (Llama-3.1-8B)"
+    }
+  }
+}

@@ -1,0 +1,186 @@
+version: '3.8'
+
+# ============================================================================
+# MoLE — Ray Distributed Deployment (Coordinator Machine)
+# ============================================================================
+#
+# This file replaces docker-compose-distributed.yml.
+#
+# What changes vs the old setup
+# ─────────────────────────────
+# OLD:  coordinator + N separate expert-worker FastAPI containers
+#       communicating via HTTP, Redis job queue, manual port mapping
+#
+# NEW:  Ray head node  +  coordinator FastAPI container (connects to Ray)
+#       Expert workers are Ray Actors spawned BY the coordinator — no separate
+#       worker containers on this machine (workers on remote GPU machines join
+#       the Ray cluster using docker-compose-ray-worker.yml).
+#
+# Ray handles: GPU scheduling, cross-node RPC, fault tolerance, health checks.
+#
+# Quick start (single machine — coordinator + GPU 0 worker on same host):
+#   RAY_HEAD_IP=<this-machine-ip> \
+#   docker-compose -f docker/docker-compose-ray.yml up --build
+#
+# Multi-machine setup:
+#   1. Start this file on the coordinator machine.
+#   2. On each GPU machine, start docker-compose-ray-worker.yml pointing at
+#      RAY_HEAD_ADDRESS=<coordinator-ip>:6379.
+#   3. Coordinator will auto-spawn worker actors on the joined GPU nodes.
+# ============================================================================
+
+services:
+
+  # --------------------------------------------------------------------------
+  # RAY HEAD NODE
+  # Manages the Ray cluster: GCS, scheduler, dashboard, object store.
+  # Runs on the coordinator machine.  GPU worker nodes join this head.
+  # --------------------------------------------------------------------------
+  ray-head:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: mole-ray-head
+    command: >
+      ray start
+        --head
+        --port=6379
+        --dashboard-host=0.0.0.0
+        --dashboard-port=8265
+        --ray-client-server-port=10001
+        --num-cpus=4
+        --num-gpus=0
+        --block
+    environment:
+      - CUDA_VISIBLE_DEVICES=""
+      - NVIDIA_VISIBLE_DEVICES=void
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ray", "status"]
+      interval: 15s
+      timeout: 10s
+      start_period: 30s
+      retries: 5
+
+  # --------------------------------------------------------------------------
+  # COORDINATOR
+  # Gating pipeline (FastText + XLM-RoBERTa + Q-learning) + Ray gateway.
+  # Connects to the Ray head, then spawns ExpertWorkerActors on the cluster.
+  # No LLM is loaded in this process; all inference is delegated to actors.
+  # --------------------------------------------------------------------------
+  coordinator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: mole-coordinator
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    environment:
+      # Service mode
+      - SERVICE_MODE=coordinator
+      - EXPERT_MAPPING_PATH=/app/config/expert_machine_mapping.json
+
+      # --- Ray settings ---
+      - USE_RAY=true
+      # Use Ray Client protocol (ray://) — connects over TCP on port 10001.
+      # This is required when coordinator and ray-head are separate containers:
+      #   - localhost:6379  → GCS address, requires shared /tmp/ray Unix socket (fails)
+      #   - ray://localhost:10001 → Ray Client, pure TCP, no shared filesystem needed
+      - RAY_ADDRESS=ray://localhost:10001
+
+      # API
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - DEBUG=false
+
+      # JWT (change in production!)
+      - JWT_SECRET_KEY=your-super-secret-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+      # Suppress autoscaler "No available node types" scheduler event messages
+      - RAY_SCHEDULER_EVENTS=0
+
+      # Coordinator runs on CPU — GPU reserved for worker actors
+      - CUDA_VISIBLE_DEVICES=""
+      - NVIDIA_VISIBLE_DEVICES=void
+
+      # HuggingFace cache
+      - HF_HOME=/root/.cache/huggingface
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+
+      # Request timeout
+      - REQUEST_TIMEOUT_SECONDS=300
+
+      # Database
+      - DATABASE_URL=sqlite:////app/data/users.db
+    volumes:
+      - ./volumes/gating_models:/app/moe_router/gating/models
+      - ./volumes/language_models:/app/moe_router/models:ro
+      - ../config:/app/config:ro
+      - ./volumes/db:/app/data
+      # HuggingFace models (read by worker actors on the same machine)
+      - /home/cse/.cache/huggingface:/root/.cache/huggingface
+      # Adapter weights (read by worker actors)
+      - ./volumes/adapter_weights:/app/moe_router/experts/llms/adapters:ro
+    network_mode: host
+    depends_on:
+      ray-head:
+        condition: service_healthy
+      ray-worker-local:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
+  # --------------------------------------------------------------------------
+  # LOCAL GPU WORKER NODE
+  # Registers this machine's GPU(s) with the Ray cluster so that
+  # ExpertWorkerActors spawned by the coordinator have a GPU slot to land on.
+  #
+  # Why this service exists here (not only in docker-compose-ray-worker.yml):
+  #   csetuf07 is BOTH the coordinator machine AND a GPU machine.
+  #   The coordinator process itself runs CPU-only (ray-head --num-gpus=0).
+  #   This worker node joins the cluster and advertises the local GPU so that
+  #   Ray can schedule ExpertWorkerActor(num_gpus=1) on it.
+  #
+  # For additional remote GPU machines, run docker-compose-ray-worker.yml on
+  # those machines pointing RAY_HEAD_ADDRESS at this machine's IP:6379.
+  # --------------------------------------------------------------------------
+  ray-worker-local:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: mole-ray-worker-local
+    command: >
+      ray start
+        --address=localhost:6379
+        --num-cpus=4
+        --num-gpus=1
+        --block
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HOME=/root/.cache/huggingface
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - EXPERT_REGISTRY_PATH=/app/moe_router/experts/config/experts_registry.json
+    volumes:
+      - /home/cse/.cache/huggingface:/root/.cache/huggingface
+      - ./volumes/adapter_weights:/app/moe_router/experts/llms/adapters:ro
+      - ../config:/app/config:ro
+    network_mode: host
+    runtime: nvidia
+    depends_on:
+      ray-head:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ray", "status", "--address", "localhost:6379"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 5

@@ -1,0 +1,70 @@
+version: '3.8'
+
+# ============================================================================
+# MoLE — Ray Worker Node (GPU Machine)
+# ============================================================================
+#
+# Run this file on each GPU machine that should serve as an expert worker.
+#
+# What this does
+# ──────────────
+# Starts a Ray worker node that joins the Ray cluster running on the
+# coordinator machine (ray-head).  Once joined, the coordinator's
+# spawn_workers.py will automatically place ExpertWorkerActors on this node
+# (one actor per model, using num_gpus=1 resource requirement).
+#
+# Usage
+# ─────
+# On the GPU worker machine, set the coordinator's IP and run:
+#
+#   RAY_HEAD_ADDRESS=<coordinator-ip>:6379 \
+#   docker-compose -f docker/docker-compose-ray-worker.yml up --build
+#
+# Environment variables
+# ─────────────────────
+# RAY_HEAD_ADDRESS   IP:port of the Ray head node  (required)
+#                    Example: 10.8.100.10:6379
+# NUM_GPUS           Number of GPUs to register with the Ray cluster
+#                    (default: 1 — use all GPUs on this machine if > 1)
+#
+# Example — machine with 2 GPUs:
+#   NUM_GPUS=2 RAY_HEAD_ADDRESS=10.8.100.10:6379 \
+#   docker-compose -f docker/docker-compose-ray-worker.yml up
+# ============================================================================
+
+services:
+
+  ray-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: mole-ray-worker
+    command: >
+      ray start
+        --address=${RAY_HEAD_ADDRESS}
+        --num-cpus=4
+        --num-gpus=${NUM_GPUS:-1}
+        --block
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HOME=/root/.cache/huggingface
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      # Pass registry path so worker actors can find experts_registry.json
+      - EXPERT_REGISTRY_PATH=/app/moe_router/experts/config/experts_registry.json
+    volumes:
+      # HuggingFace model weights — must be present on the worker machine
+      - /home/cse/.cache/huggingface:/root/.cache/huggingface
+      # LoRA adapter weights — must be present on the worker machine
+      - ./volumes/adapter_weights:/app/moe_router/experts/llms/adapters:ro
+      # Expert registry (read-only)
+      - ../config:/app/config:ro
+    network_mode: host
+    runtime: nvidia
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ray", "status", "--address", "${RAY_HEAD_ADDRESS}"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 5

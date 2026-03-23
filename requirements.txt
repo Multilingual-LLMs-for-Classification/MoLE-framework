@@ -34,5 +34,10 @@ httpx>=0.27.0
 # Database
 sqlalchemy>=2.0.0
 
+# Ray distributed framework
+# Replaces manual HTTP dispatch + Redis queue with Ray actors and cluster RPC.
+# ray[default] includes the Ray dashboard and cluster management tools.
+ray[default]>=2.10.0
+
 # Testing
 pytest>=7.0.0
