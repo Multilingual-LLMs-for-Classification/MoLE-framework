@@ -121,6 +121,11 @@ def spawn_workers(
     model_to_actors: Dict[str, List[str]] = {}
 
     for worker_id, worker_cfg in registry["workers"].items():
+        # Skip workers explicitly disabled (machine not yet in the cluster)
+        if not worker_cfg.get("enabled", True):
+            print(f"[spawn_workers] Skipping '{worker_id}' (enabled=false).")
+            continue
+
         model_key    = worker_cfg["base_model_key"]
         num_replicas = int(worker_cfg.get("num_replicas", 1))
         num_gpus     = float(worker_cfg.get("num_gpus", 1))
