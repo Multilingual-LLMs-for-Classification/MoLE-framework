@@ -22,6 +22,16 @@ cross-node RPC, fault tolerance, and observability automatically.
 11. [Adding More GPU Workers](#11-adding-more-gpu-workers)
 12. [Stopping the System](#12-stopping-the-system)
 13. [Troubleshooting](#13-troubleshooting)
+    - [NVIDIA runtime fix for new machines](#nvidia-container-runtime-not-working-on-a-new-machine)
+    - [Worker joined but 0 GPUs registered](#remote-worker-joined-cluster-but-shows-0-gpus)
+    - [Invalid address format](#valueerror-invalid-address-format)
+    - [Stale CDI socket reference](#varruncdiniviaiayaml-contains-stale-socket-reference)
+    - [raylet socket error](#failed-to-connect-to-socket-at-address-tmpraysession_socketraylet)
+    - [No GPU node available](#no-available-node-types-can-fulfill-resource-request-gpu-10)
+    - [persistenced socket missing](#open-runnvidia-persistencedsocket-no-such-file-or-directory)
+    - [Filesystem 95% full warning](#raylet-file_system_monitorcc--is-over-95-full)
+    - [Actors stay PENDING](#coordinator-starts-but-actors-stay-pending)
+    - [Actor crash loop](#actor-crashes--restarts-in-a-loop)
 14. [Advanced Options](#14-advanced-options)
 
 ---
@@ -499,6 +509,140 @@ docker-compose -f docker/docker-compose-ray-worker.yml down
 ---
 
 ## 13. Troubleshooting
+
+### NVIDIA Container Runtime not working on a new machine
+
+When setting up a fresh GPU worker machine, the NVIDIA container runtime is often
+misconfigured out of the box. Run this full fix sequence before starting the worker:
+
+**Step 1 — Check the current state**
+```bash
+ls -la /run/nvidia-persistenced/socket 2>&1
+cat /etc/nvidia-container-runtime/config.toml | grep -E "mode|ldconfig"
+ls /etc/cdi/ /var/run/cdi/ 2>/dev/null
+```
+
+**Step 2 — Fix ldconfig path** (common issue: `.real` suffix points to non-existent binary)
+```bash
+sudo sed -i 's|ldconfig = "@/sbin/ldconfig.real"|ldconfig = "@/sbin/ldconfig"|' \
+    /etc/nvidia-container-runtime/config.toml
+```
+
+**Step 3 — Switch to CDI mode**
+```bash
+sudo sed -i 's/^mode = "auto"/mode = "cdi"/' \
+    /etc/nvidia-container-runtime/config.toml
+```
+
+**Step 4 — Generate CDI spec**
+```bash
+sudo mkdir -p /etc/cdi
+sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+sudo nvidia-ctk cdi list   # should show nvidia.com/gpu=0, nvidia.com/gpu=all
+```
+
+**Step 5 — Update Docker daemon config**
+```bash
+sudo tee /etc/docker/daemon.json > /dev/null << 'EOF'
+{
+    "runtimes": {
+        "nvidia": {
+            "args": [],
+            "path": "nvidia-container-runtime"
+        }
+    },
+    "cdi-spec-dirs": ["/etc/cdi"]
+}
+EOF
+sudo systemctl restart docker
+```
+
+**Step 6 — Verify GPU is visible inside a container**
+```bash
+docker run --rm --runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all \
+    nvidia/cuda:12.1.0-runtime-ubuntu22.04 nvidia-smi
+```
+
+Expected: `nvidia-smi` shows the GPU card with `No running processes found` —
+this is correct and means the GPU is idle and ready.
+
+**Step 7 — Start nvidia-persistenced**
+```bash
+sudo systemctl start nvidia-persistenced
+ls -la /run/nvidia-persistenced/socket   # must exist
+```
+
+---
+
+### Remote worker joined cluster but shows 0 GPUs
+
+After running `docker exec mole-ray-head ray status` on the coordinator, the new
+node appears in the Active list but `GPU: X/1.0` total does not increase.
+
+**Cause:** `NUM_GPUS` was not set — the container started with `--num-gpus=0`.
+
+**Fix:** Stop and restart with the env var explicitly set:
+```bash
+# On the remote worker machine
+docker-compose -f docker/docker-compose-ray-worker.yml down
+
+RAY_HEAD_ADDRESS=<coordinator-ip>:6379 NUM_GPUS=1 \
+docker-compose -f docker/docker-compose-ray-worker.yml up -d
+
+docker logs -f mole-ray-worker
+```
+
+Verify the GPU count increased on the coordinator:
+```bash
+docker exec mole-ray-head ray status
+# GPU line should now show e.g. 1.0/2.0
+```
+
+---
+
+### `ValueError: Invalid address format:`
+
+**Cause:** `RAY_HEAD_ADDRESS` was empty when the worker container started.
+`--address=` was passed with no value.
+
+**Fix:** Always pass `RAY_HEAD_ADDRESS` explicitly — it has no default:
+```bash
+# Wrong — RAY_HEAD_ADDRESS not set
+docker-compose -f docker/docker-compose-ray-worker.yml up -d
+
+# Correct
+RAY_HEAD_ADDRESS=10.8.100.21:6379 NUM_GPUS=1 \
+docker-compose -f docker/docker-compose-ray-worker.yml up -d
+```
+
+Get the coordinator IP from the coordinator machine:
+```bash
+hostname -I | awk '{print $1}'
+```
+
+---
+
+### `/var/run/cdi/nvidia.yaml` contains stale socket reference
+
+If the CDI spec in `/var/run/cdi/` was generated while `nvidia-persistenced` was
+running, it includes a mount for `/run/nvidia-persistenced/socket`. If persistenced
+is later stopped, Docker fails to start containers with:
+
+```
+failed to fulfil mount request: open /run/nvidia-persistenced/socket: no such file or directory
+```
+
+**Fix:** Start nvidia-persistenced (socket is recreated) — preferred approach:
+```bash
+sudo systemctl start nvidia-persistenced
+```
+
+Or regenerate the CDI spec without the socket (if you do not want persistenced):
+```bash
+sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml
+```
+
+---
 
 ### `Failed to connect to socket at address: /tmp/ray/session_.../sockets/raylet`
 
