@@ -39,14 +39,11 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: mole-ray-worker
-    # Use sh -c so $RAY_HEAD_ADDRESS and $NUM_GPUS expand inside the container
-    # (from the environment: block below), not at docker-compose parse time on the host.
-    command: >
-      sh -c "ray start
-        --address=$$RAY_HEAD_ADDRESS
-        --num-cpus=4
-        --num-gpus=$${NUM_GPUS:-1}
-        --block"
+    # List form avoids YAML folding issues; sh -c expands vars from the environment block.
+    command:
+      - sh
+      - -c
+      - "ray start --address=$$RAY_HEAD_ADDRESS --num-cpus=4 --num-gpus=$${NUM_GPUS:-1} --block"
     environment:
       - RAY_HEAD_ADDRESS=${RAY_HEAD_ADDRESS}
       - NUM_GPUS=${NUM_GPUS:-1}
