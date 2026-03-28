@@ -62,6 +62,7 @@ services:
       - ./volumes/adapter_weights:/app/moe_router/experts/llms/adapters:ro
       # Expert registry (read-only)
       - ../config:/app/config:ro
+    shm_size: '10.24gb'
     network_mode: host
     runtime: nvidia
     restart: unless-stopped
