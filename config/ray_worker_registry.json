@@ -23,7 +23,7 @@
       "note": "Spanish / Japanese sentiment rating (Qwen2.5-7B). csetuf14 GPU 0."
     },
     "worker-2": {
-      "enabled": false,
+      "enabled": true,
       "base_model_key": "bloomz-7b1",
       "num_replicas": 1,
       "num_gpus": 1,

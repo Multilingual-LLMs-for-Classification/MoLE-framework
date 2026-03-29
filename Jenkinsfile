@@ -101,167 +101,35 @@ pipeline {
         }
 
         // ---------------------------------------------------------------------
-        // Stage 2 — Build Docker Image (coordinator)
+        // Stage 2 — SSH Test (temporary — verify SSH connectivity only)
         // ---------------------------------------------------------------------
-        stage('Build Image') {
-            steps {
-                script {
-                    echo 'Building coordinator Docker image...'
-                    sh """
-                        docker build \
-                            -f docker/Dockerfile \
-                            -t mole-coordinator:${env.BUILD_NUMBER} \
-                            -t mole-coordinator:latest \
-                            .
-                    """
-                }
-            }
-        }
-
-        // ---------------------------------------------------------------------
-        // Stage 3 — Run Tests (CPU-only, no Ray or GPU needed)
-        // ---------------------------------------------------------------------
-        stage('Run Tests') {
-            when {
-                not { expression { params.SKIP_TESTS } }
-            }
-            steps {
-                script {
-                    echo 'Running unit tests inside coordinator image...'
-                    sh """
-                        docker run --rm \
-                            -e DATABASE_URL=${env.DATABASE_URL} \
-                            -e SERVICE_MODE=${env.SERVICE_MODE} \
-                            -e JWT_SECRET_KEY=${env.JWT_SECRET_KEY} \
-                            -e USE_RAY=false \
-                            mole-coordinator:${env.BUILD_NUMBER} \
-                            pytest tests/ -v \
-                                --ignore=tests/test_api.py \
-                                --tb=short \
-                                -q
-                    """
-                }
-            }
-            post {
-                failure {
-                    echo 'Tests failed — aborting deploy.'
-                }
-            }
-        }
-
-        // ---------------------------------------------------------------------
-        // Stage 4 — Deploy Coordinator (only on main branch)
-        // ---------------------------------------------------------------------
-        stage('Deploy Coordinator') {
-            when {
-                allOf {
-                    branch 'main'
-                    expression { params.DEPLOY_COORDINATOR }
-                }
-            }
+        stage('SSH Test') {
             steps {
                 sshagent(credentials: ['csetuf07-ssh-key']) {
                     sh """
                         ssh -o StrictHostKeyChecking=no \
                             ${env.COORDINATOR_USER}@${env.COORDINATOR_HOST} \
-                            '
-                                set -e
-                                echo "[deploy] Pulling latest code..."
-                                cd ${env.COORDINATOR_REPO}
-                                git pull origin main
-
-                                echo "[deploy] Rebuilding and restarting coordinator..."
-                                cd docker
-                                docker-compose -f docker-compose-ray.yml \
-                                    up --build -d --no-deps coordinator
-
-                                echo "[deploy] Coordinator restarted."
-                            '
+                            'echo "SSH to csetuf07 OK — hostname: $(hostname)"'
                     """
                 }
-            }
-        }
-
-        // ---------------------------------------------------------------------
-        // Stage 5 — Deploy Workers (parallel, only on main branch)
-        // ---------------------------------------------------------------------
-        stage('Deploy Workers') {
-            when {
-                allOf {
-                    branch 'main'
-                    expression { params.DEPLOY_WORKERS }
-                }
-            }
-            parallel {
-
-                stage('Worker — csetuf14') {
-                    steps {
-                        sshagent(credentials: ['csetuf14-ssh-key']) {
-                            sh """
-                                ssh -o StrictHostKeyChecking=no \
-                                    ${env.WORKER_14_USER}@${env.WORKER_14_HOST} \
-                                    '
-                                        set -e
-                                        echo "[deploy] Pulling latest code on csetuf14..."
-                                        cd ${env.WORKER_14_REPO}
-                                        git pull origin main
-
-                                        echo "[deploy] Rebuilding and restarting worker..."
-                                        cd docker
-                                        RAY_HEAD_ADDRESS=${env.COORDINATOR_HOST}:6379 \
-                                        NUM_GPUS=${env.WORKER_14_NUM_GPUS} \
-                                        docker-compose -f docker-compose-ray-worker.yml \
-                                            up --build -d --no-deps ray-worker
-
-                                        echo "[deploy] Worker restarted."
-                                    '
-                            """
-                        }
-                    }
-                }
-
-                // Add more worker stages here as new machines join the cluster:
-                //
-                // stage('Worker — csetufXX') {
-                //     steps {
-                //         sshagent(credentials: ['csetufXX-ssh-key']) {
-                //             sh "ssh cse@10.8.100.XX '...'"
-                //         }
-                //     }
-                // }
-
-            }
-        }
-
-        // ---------------------------------------------------------------------
-        // Stage 6 — Health Check
-        // ---------------------------------------------------------------------
-        stage('Health Check') {
-            when {
-                branch 'main'
-            }
-            steps {
-                script {
-                    echo 'Waiting 15s for containers to stabilise...'
-                    sleep(15)
-
-                    echo 'Checking coordinator API health...'
+                sshagent(credentials: ['csetuf14-ssh-key']) {
                     sh """
-                        curl -sf --retry 5 --retry-delay 5 \
-                            ${env.HEALTH_URL} | python3 -m json.tool
+                        ssh -o StrictHostKeyChecking=no \
+                            ${env.WORKER_14_USER}@${env.WORKER_14_HOST} \
+                            'echo "SSH to csetuf14 OK — hostname: $(hostname)"'
                     """
-
-                    echo 'Checking Ray cluster status...'
-                    sshagent(credentials: ['csetuf07-ssh-key']) {
-                        sh """
-                            ssh -o StrictHostKeyChecking=no \
-                                ${env.COORDINATOR_USER}@${env.COORDINATOR_HOST} \
-                                'docker exec mole-ray-head ray status'
-                        """
-                    }
                 }
             }
         }
+
+        // ---------------------------------------------------------------------
+        // Stage 3 — Build Image       [commented out for SSH test]
+        // Stage 4 — Run Tests         [commented out for SSH test]
+        // Stage 5 — Deploy Coordinator[commented out for SSH test]
+        // Stage 6 — Deploy Workers    [commented out for SSH test]
+        // Stage 7 — Health Check      [commented out for SSH test]
+        // Uncomment once SSH is confirmed working.
+        // ---------------------------------------------------------------------
 
     }
 
@@ -289,6 +157,8 @@ pipeline {
         always {
             // Clean up local test DB if created
             sh 'rm -f test_users.db || true'
+            // Remove the workspace clone from the Jenkins machine
+            cleanWs()
         }
     }
 }
