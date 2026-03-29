@@ -109,14 +109,14 @@ pipeline {
                     sh """
                         ssh -o StrictHostKeyChecking=no \
                             ${env.COORDINATOR_USER}@${env.COORDINATOR_HOST} \
-                            'echo "SSH to csetuf07 OK — hostname: $(hostname)"'
+                            'echo "SSH to csetuf07 OK — hostname: \$(hostname)"'
                     """
                 }
                 sshagent(credentials: ['csetuf14-ssh-key']) {
                     sh """
                         ssh -o StrictHostKeyChecking=no \
                             ${env.WORKER_14_USER}@${env.WORKER_14_HOST} \
-                            'echo "SSH to csetuf14 OK — hostname: $(hostname)"'
+                            'echo "SSH to csetuf14 OK — hostname: \$(hostname)"'
                     """
                 }
             }
