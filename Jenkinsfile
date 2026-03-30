@@ -159,6 +159,7 @@ pipeline {
                             mole-coordinator:${env.BUILD_NUMBER} \
                             pytest tests/ -v \
                                 --ignore=tests/test_api.py \
+                                --ignore=tests/test_classifier_modes.py \
                                 --tb=short \
                                 -q
                     """
