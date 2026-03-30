@@ -173,7 +173,42 @@ pipeline {
         }
 
         // ---------------------------------------------------------------------
-        // Stage 5 — Deploy Coordinator[pending]
+        // Stage 5 — Deploy Coordinator
+        // ---------------------------------------------------------------------
+        stage('Deploy Coordinator') {
+            when {
+                allOf {
+                    anyOf {
+                        branch 'main'
+                        branch 'feature/jenkins-deployment-pipeline'
+                    }
+                    expression { params.DEPLOY_COORDINATOR }
+                }
+            }
+            steps {
+                sshagent(credentials: ['csetuf07-ssh-key']) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no \
+                            ${env.COORDINATOR_USER}@${env.COORDINATOR_HOST} \
+                            '
+                                set -e
+                                echo "[deploy] Pulling latest code..."
+                                cd ${env.COORDINATOR_REPO}
+                                git pull origin main
+
+                                echo "[deploy] Rebuilding and restarting coordinator..."
+                                cd docker
+                                docker-compose -f docker-compose-ray.yml \
+                                    up --build -d --no-deps coordinator
+
+                                echo "[deploy] Coordinator restarted."
+                            '
+                    """
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
         // Stage 6 — Deploy Workers    [pending]
         // Stage 7 — Health Check      [pending]
         // ---------------------------------------------------------------------
