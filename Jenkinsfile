@@ -209,9 +209,81 @@ pipeline {
         }
 
         // ---------------------------------------------------------------------
-        // Stage 6 — Deploy Workers    [pending]
-        // Stage 7 — Health Check      [pending]
+        // Stage 6 — Deploy Workers (parallel)
         // ---------------------------------------------------------------------
+        stage('Deploy Workers') {
+            when {
+                allOf {
+                    anyOf {
+                        branch 'main'
+                        branch 'feature/jenkins-deployment-pipeline'
+                    }
+                    expression { params.DEPLOY_WORKERS }
+                }
+            }
+            parallel {
+
+                stage('Worker — csetuf14') {
+                    steps {
+                        sshagent(credentials: ['csetuf14-ssh-key']) {
+                            sh """
+                                ssh -o StrictHostKeyChecking=no \
+                                    ${env.WORKER_14_USER}@${env.WORKER_14_HOST} \
+                                    '
+                                        set -e
+                                        echo "[deploy] Pulling latest code on csetuf14..."
+                                        cd ${env.WORKER_14_REPO}
+                                        git pull origin main
+
+                                        echo "[deploy] Rebuilding and restarting worker..."
+                                        cd docker
+                                        RAY_HEAD_ADDRESS=${env.COORDINATOR_HOST}:6379 \
+                                        NUM_GPUS=${env.WORKER_14_NUM_GPUS} \
+                                        docker-compose -f docker-compose-ray-worker.yml \
+                                            up --build -d --no-deps ray-worker
+
+                                        echo "[deploy] Worker restarted."
+                                    '
+                            """
+                        }
+                    }
+                }
+
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 7 — Health Check
+        // ---------------------------------------------------------------------
+        stage('Health Check') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'feature/jenkins-deployment-pipeline'
+                }
+            }
+            steps {
+                script {
+                    echo 'Waiting 15s for containers to stabilise...'
+                    sleep(15)
+
+                    echo 'Checking coordinator API health...'
+                    sh """
+                        curl -sf --retry 5 --retry-delay 5 \
+                            ${env.HEALTH_URL} | python3 -m json.tool
+                    """
+
+                    echo 'Checking Ray cluster status...'
+                    sshagent(credentials: ['csetuf07-ssh-key']) {
+                        sh """
+                            ssh -o StrictHostKeyChecking=no \
+                                ${env.COORDINATOR_USER}@${env.COORDINATOR_HOST} \
+                                'docker exec mole-ray-head ray status'
+                        """
+                    }
+                }
+            }
+        }
 
     }
 
