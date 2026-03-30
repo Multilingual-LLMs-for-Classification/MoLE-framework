@@ -35,6 +35,7 @@ COPY app/ ./app/
 COPY moe_router/ ./moe_router/
 COPY expert_worker/ ./expert_worker/
 COPY ray_cluster/ ./ray_cluster/
+COPY tests/ ./tests/
 
 # Set Python path
 ENV PYTHONPATH="/app"

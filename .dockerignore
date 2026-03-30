@@ -12,7 +12,6 @@ env/
 .vscode/
 
 # Tests
-tests/
 .pytest_cache/
 
 # Documentation

@@ -31,9 +31,15 @@ Improvements over the first version
    Consecutive requests alternate between the two.
 """
 
-from typing import Dict, Any, List
+import asyncio
+from typing import Dict, Any, List, Set
 
 import ray
+
+
+# Default per-request timeout (seconds).  Covers model inference on GPU.
+# Raise this if your largest model genuinely needs more time.
+_DEFAULT_DISPATCH_TIMEOUT_S = 120.0
 
 
 class RayGatewayService:
@@ -62,6 +68,10 @@ class RayGatewayService:
         self._actor_cache: Dict[str, Any] = {}
         # Per-model round-robin counters
         self._rr_index: Dict[str, int] = {k: 0 for k in model_to_actors}
+        # Circuit breaker: actors confirmed dead (machine offline / actor crashed).
+        # Requests to these actors fail immediately rather than hanging.
+        # Cleared automatically by health_check_all() when the actor recovers.
+        self._dead_actors: Set[str] = set()
 
         total_actors = sum(len(v) for v in model_to_actors.values())
         print(
@@ -80,15 +90,16 @@ class RayGatewayService:
             self._actor_cache[actor_name] = ray.get_actor(actor_name)
         return self._actor_cache[actor_name]
 
-    def _pick_actor(self, base_model_key: str) -> Any:
+    def _pick_actor(self, base_model_key: str) -> tuple[Any, str]:
         """
         Pick the next actor for base_model_key using round-robin.
-        Invalidates the cache entry if the actor is unreachable.
+        Returns (actor_handle, actor_name).
         """
         actor_names = self._model_to_actors[base_model_key]
         idx = self._rr_index[base_model_key] % len(actor_names)
         self._rr_index[base_model_key] = idx + 1
-        return self._get_actor(actor_names[idx])
+        actor_name = actor_names[idx]
+        return self._get_actor(actor_name), actor_name
 
     # ------------------------------------------------------------------
     # Public API — same interface as the old GatewayService
@@ -126,7 +137,14 @@ class RayGatewayService:
                 "Check that spawn_workers completed successfully."
             )
 
-        actor = self._pick_actor(base_model_key)
+        actor, actor_name = self._pick_actor(base_model_key)
+
+        # Circuit breaker: fail immediately if this actor is known to be dead.
+        if actor_name in self._dead_actors:
+            raise RuntimeError(
+                f"Expert '{base_model_key}' ({actor_name}) is currently unavailable "
+                "(machine offline or actor crashed). Try again later."
+            )
 
         result_ref = actor.classify.remote(
             task_key=payload["task_key"],
@@ -137,10 +155,21 @@ class RayGatewayService:
             request_id=payload["request_id"],
         )
 
-        # ExpertWorkerActor.classify is async → ObjectRef is directly awaitable.
-        # This is equivalent to asyncio.to_thread(ray.get, ref) but avoids the
-        # thread-pool overhead.
-        return await result_ref
+        try:
+            return await asyncio.wait_for(result_ref, timeout=_DEFAULT_DISPATCH_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            self._dead_actors.add(actor_name)
+            self._actor_cache.pop(actor_name, None)
+            raise RuntimeError(
+                f"Expert '{base_model_key}' ({actor_name}) timed out after "
+                f"{_DEFAULT_DISPATCH_TIMEOUT_S}s — machine may be offline."
+            )
+        except ray.exceptions.RayActorError as exc:
+            self._dead_actors.add(actor_name)
+            self._actor_cache.pop(actor_name, None)
+            raise RuntimeError(
+                f"Expert '{base_model_key}' ({actor_name}) is unreachable: {exc}"
+            )
 
     async def health_check_all(self) -> Dict[str, Any]:
         """
@@ -153,12 +182,15 @@ class RayGatewayService:
                 try:
                     actor = self._get_actor(actor_name)
                     info = await actor.get_info.remote()
+                    # Actor is alive — clear any previous dead marking
+                    self._dead_actors.discard(actor_name)
                     results[actor_name] = {"status": "ok", "info": info}
                 except (ValueError, RuntimeError, ray.exceptions.RayError) as exc:
                     # ValueError  — actor not found by name (not yet scheduled)
                     # RayError    — actor unreachable / crashed / restarting
                     # RuntimeError — actor returned an error result
                     self._actor_cache.pop(actor_name, None)
+                    self._dead_actors.add(actor_name)
                     results[actor_name] = {"status": "unreachable", "error": str(exc)}
         return results
 

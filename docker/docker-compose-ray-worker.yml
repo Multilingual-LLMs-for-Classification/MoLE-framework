@@ -39,13 +39,14 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: mole-ray-worker
-    command: >
-      ray start
-        --address=${RAY_HEAD_ADDRESS}
-        --num-cpus=4
-        --num-gpus=${NUM_GPUS:-1}
-        --block
+    # List form avoids YAML folding issues; sh -c expands vars from the environment block.
+    command:
+      - sh
+      - -c
+      - "ray start --address=$$RAY_HEAD_ADDRESS --num-cpus=4 --num-gpus=$${NUM_GPUS:-1} --block"
     environment:
+      - RAY_HEAD_ADDRESS=${RAY_HEAD_ADDRESS}
+      - NUM_GPUS=${NUM_GPUS:-1}
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
       - NVIDIA_VISIBLE_DEVICES=all
       - HF_HOME=/root/.cache/huggingface
@@ -53,12 +54,15 @@ services:
       # Pass registry path so worker actors can find experts_registry.json
       - EXPERT_REGISTRY_PATH=/app/moe_router/experts/config/experts_registry.json
     volumes:
-      # HuggingFace model weights — must be present on the worker machine
-      - /home/cse/.cache/huggingface:/root/.cache/huggingface
+      # HuggingFace model weights — set HF_CACHE_PATH to the correct path for this machine.
+      # Default: /home/cse/.cache/huggingface  (override with HF_CACHE_PATH env var)
+      # Example on csetuf14: HF_CACHE_PATH=/home/cse_g4/.cache/huggingface
+      - ${HF_CACHE_PATH:-/home/cse/.cache/huggingface}:/root/.cache/huggingface
       # LoRA adapter weights — must be present on the worker machine
       - ./volumes/adapter_weights:/app/moe_router/experts/llms/adapters:ro
       # Expert registry (read-only)
       - ../config:/app/config:ro
+    shm_size: '10.24gb'
     network_mode: host
     runtime: nvidia
     restart: unless-stopped
