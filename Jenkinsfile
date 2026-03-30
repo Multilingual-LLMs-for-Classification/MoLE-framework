@@ -123,12 +123,28 @@ pipeline {
         }
 
         // ---------------------------------------------------------------------
-        // Stage 3 — Build Image       [commented out for SSH test]
-        // Stage 4 — Run Tests         [commented out for SSH test]
-        // Stage 5 — Deploy Coordinator[commented out for SSH test]
-        // Stage 6 — Deploy Workers    [commented out for SSH test]
-        // Stage 7 — Health Check      [commented out for SSH test]
-        // Uncomment once SSH is confirmed working.
+        // Stage 3 — Build Docker Image (coordinator)
+        // ---------------------------------------------------------------------
+        stage('Build Image') {
+            steps {
+                script {
+                    echo 'Building coordinator Docker image...'
+                    sh """
+                        docker build \
+                            -f docker/Dockerfile \
+                            -t mole-coordinator:${env.BUILD_NUMBER} \
+                            -t mole-coordinator:latest \
+                            .
+                    """
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 4 — Run Tests         [pending]
+        // Stage 5 — Deploy Coordinator[pending]
+        // Stage 6 — Deploy Workers    [pending]
+        // Stage 7 — Health Check      [pending]
         // ---------------------------------------------------------------------
 
     }
