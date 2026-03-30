@@ -141,7 +141,37 @@ pipeline {
         }
 
         // ---------------------------------------------------------------------
-        // Stage 4 — Run Tests         [pending]
+        // Stage 4 — Run Tests (CPU-only, no Ray or GPU needed)
+        // ---------------------------------------------------------------------
+        stage('Run Tests') {
+            when {
+                not { expression { params.SKIP_TESTS } }
+            }
+            steps {
+                script {
+                    echo 'Running unit tests inside coordinator image...'
+                    sh """
+                        docker run --rm \
+                            -e DATABASE_URL=${env.DATABASE_URL} \
+                            -e SERVICE_MODE=${env.SERVICE_MODE} \
+                            -e JWT_SECRET_KEY=${env.JWT_SECRET_KEY} \
+                            -e USE_RAY=false \
+                            mole-coordinator:${env.BUILD_NUMBER} \
+                            pytest tests/ -v \
+                                --ignore=tests/test_api.py \
+                                --tb=short \
+                                -q
+                    """
+                }
+            }
+            post {
+                failure {
+                    echo 'Tests failed — aborting deploy.'
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
         // Stage 5 — Deploy Coordinator[pending]
         // Stage 6 — Deploy Workers    [pending]
         // Stage 7 — Health Check      [pending]
